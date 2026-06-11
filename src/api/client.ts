@@ -1,0 +1,209 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { createMessageStore } from "../core/messageStore";
+import type { AppSnapshot, IncomingDanmuRaw } from "../core/types";
+
+export interface DisplayConfig {
+  websocketUrl: string;
+  opacity: number;
+  fontSize: number;
+  panelCollapsed: boolean;
+}
+
+export interface DanmuClient {
+  init(onSnapshot: (snapshot: AppSnapshot) => void): Promise<() => void>;
+  getConfig(): Promise<DisplayConfig>;
+  updateConfig(config: Partial<DisplayConfig>): Promise<DisplayConfig>;
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+  reconnect(): Promise<void>;
+  ackMessage(messageId: number): Promise<void>;
+  ackUserMessages(uid: string): Promise<void>;
+  selectUserAnchor(messageId: number): Promise<void>;
+  setPersonPanelHover(value: boolean): Promise<void>;
+  scrollMainViewport(delta: number): Promise<void>;
+  scrollPersonViewport(delta: number): Promise<void>;
+  setViewportSizes(sizes: {
+    mainViewportSize?: number;
+    personViewportSize?: number;
+  }): Promise<void>;
+}
+
+const defaultConfig: DisplayConfig = {
+  websocketUrl: "ws://127.0.0.1:17878",
+  opacity: 0.82,
+  fontSize: 14,
+  panelCollapsed: false
+};
+
+export function createDanmuClient(): DanmuClient {
+  if (isTauriRuntime()) {
+    return createTauriClient();
+  }
+
+  return createBrowserFallbackClient();
+}
+
+function isTauriRuntime() {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function createTauriClient(): DanmuClient {
+  return {
+    async init(onSnapshot) {
+      const snapshot = await invoke<AppSnapshot>("get_snapshot");
+      onSnapshot(snapshot);
+      const poll = window.setInterval(() => {
+        invoke<AppSnapshot>("get_snapshot")
+          .then(onSnapshot)
+          .catch(() => undefined);
+      }, 500);
+      let unlisten: UnlistenFn | undefined;
+      listen<AppSnapshot>("danmu_state_changed", (event) => onSnapshot(event.payload))
+        .then((dispose) => {
+          unlisten = dispose;
+        })
+        .catch(() => undefined);
+      return () => {
+        window.clearInterval(poll);
+        unlisten?.();
+      };
+    },
+    getConfig: () => invoke<DisplayConfig>("get_config"),
+    updateConfig: (config) => invoke<DisplayConfig>("update_config", { patch: config }),
+    connect: () => invoke<void>("connect_ws"),
+    disconnect: () => invoke<void>("disconnect_ws"),
+    reconnect: () => invoke<void>("reconnect_ws"),
+    ackMessage: (messageId) => invoke<void>("ack_message", { messageId }),
+    ackUserMessages: (uid) => invoke<void>("ack_user_messages", { uid }),
+    selectUserAnchor: (messageId) =>
+      invoke<void>("select_user_anchor", { messageId }),
+    setPersonPanelHover: (value) =>
+      invoke<void>("set_person_panel_hover", { value }),
+    scrollMainViewport: (delta) =>
+      invoke<void>("scroll_main_viewport", { delta }),
+    scrollPersonViewport: (delta) =>
+      invoke<void>("scroll_person_viewport", { delta }),
+    setViewportSizes: (sizes) => invoke<void>("set_viewport_sizes", sizes)
+  };
+}
+
+function createBrowserFallbackClient(): DanmuClient {
+  const store = createMessageStore({ mainViewportSize: 22, personViewportSize: 14 });
+  let config = { ...defaultConfig };
+  let socket: WebSocket | null = null;
+  let onChange: (snapshot: AppSnapshot) => void = () => undefined;
+
+  const emit = () => onChange(store.getSnapshot());
+
+  const client: DanmuClient = {
+    async init(onSnapshot) {
+      onChange = onSnapshot;
+      store.setConnection("浏览器预览：未连接", false);
+      seedPreviewMessages();
+      emit();
+      return () => {
+        socket?.close();
+      };
+    },
+    async getConfig() {
+      return config;
+    },
+    async updateConfig(patch) {
+      config = { ...config, ...patch };
+      return config;
+    },
+    async connect() {
+      socket?.close();
+      store.setConnection("连接中", false);
+      emit();
+
+      socket = new WebSocket(config.websocketUrl);
+      socket.onopen = () => {
+        store.setConnection("已连接", true);
+        emit();
+      };
+      socket.onclose = () => {
+        store.setConnection("已断开", false);
+        emit();
+      };
+      socket.onerror = () => {
+        store.setConnection("连接错误", false);
+        emit();
+      };
+      socket.onmessage = (event) => {
+        try {
+          store.ingest(JSON.parse(String(event.data)) as IncomingDanmuRaw);
+          emit();
+        } catch (error) {
+          store.setConnection(`解析失败：${String(error)}`, socket?.readyState === 1);
+          emit();
+        }
+      };
+    },
+    async disconnect() {
+      socket?.close();
+      socket = null;
+      store.setConnection("已断开", false);
+      emit();
+    },
+    async reconnect() {
+      await client.disconnect();
+      await client.connect();
+    },
+    async ackMessage(messageId) {
+      store.ackMessage(messageId);
+      emit();
+    },
+    async ackUserMessages(uid) {
+      store.ackUserMessages(uid);
+      emit();
+    },
+    async selectUserAnchor(messageId) {
+      store.selectUserAnchor(messageId);
+      emit();
+    },
+    async setPersonPanelHover(value) {
+      store.setPersonPanelHover(value);
+      emit();
+    },
+    async scrollMainViewport(delta) {
+      store.scrollMainViewport(delta);
+      emit();
+    },
+    async scrollPersonViewport(delta) {
+      store.scrollPersonViewport(delta);
+      emit();
+    },
+    async setViewportSizes(sizes) {
+      store.setViewportSizes(sizes);
+      emit();
+    }
+  };
+
+  function seedPreviewMessages() {
+    const names = ["南桥", "阿晴", "Kira", "月见", "山海", "Dora"];
+    for (let i = 0; i < 18; i += 1) {
+      const uid = 100000001 + (i % names.length);
+      store.ingest({
+        content: [
+          "主播这波细节拉满",
+          "这里能再看一次吗",
+          "舰长路过打个卡",
+          "这个配置我记一下",
+          "弹幕小窗看起来很稳",
+          "UID 追踪这个设计好用"
+        ][i % 6],
+        uid,
+        nickname: names[i % names.length],
+        userLevel: (i * 7) % 101,
+        fanLevel: (i * 5) % 121,
+        guardType: (i % 4) as 0 | 1 | 2 | 3,
+        timestampMs: Date.now() - (18 - i) * 15_000
+      });
+    }
+  }
+
+  return client;
+}

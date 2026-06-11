@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-ssr/
+src-tauri/target/
+src-tauri/gen/
+test-output/
+.superpowers/
+*.log
+*.local
+.env
+.env.*
