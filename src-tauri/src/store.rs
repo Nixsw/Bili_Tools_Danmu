@@ -45,6 +45,7 @@ impl MessageStore {
     }
 
     pub fn ingest(&mut self, raw: IncomingDanmuRaw) -> Result<DanmuMessage, String> {
+        let keep_main_pinned_to_bottom = self.is_main_viewport_at_bottom();
         let message = normalize_incoming(raw, self.next_message_id)?;
         self.next_message_id += 1;
         self.messages.push_back(message.clone());
@@ -56,6 +57,11 @@ impl MessageStore {
 
         self.trim_main_capacity();
         self.trim_user_capacity(&message.uid);
+        if keep_main_pinned_to_bottom {
+            self.pin_main_viewport_to_bottom();
+        } else {
+            self.clamp_main_viewport_start();
+        }
         self.refresh_person_start_after_data_change(&message.uid);
         Ok(message)
     }
@@ -79,6 +85,7 @@ impl MessageStore {
         {
             self.main_start_index += 1;
         }
+        self.clamp_main_viewport_start();
     }
 
     pub fn ack_user_messages(&mut self, uid: &str) {
@@ -104,6 +111,7 @@ impl MessageStore {
         {
             self.main_start_index += 1;
         }
+        self.clamp_main_viewport_start();
     }
 
     pub fn select_user_anchor(&mut self, message_id: u64) {
@@ -153,12 +161,13 @@ impl MessageStore {
         person_viewport_size: Option<usize>,
     ) {
         if let Some(value) = main_viewport_size {
+            let keep_main_pinned_to_bottom = self.is_main_viewport_at_bottom();
             self.main_viewport_size = clamp_viewport_size(value);
-            self.main_start_index = clamp_viewport_start(
-                self.main_start_index,
-                self.messages.len(),
-                self.main_viewport_size,
-            );
+            if keep_main_pinned_to_bottom {
+                self.pin_main_viewport_to_bottom();
+            } else {
+                self.clamp_main_viewport_start();
+            }
         }
 
         if let Some(value) = person_viewport_size {
@@ -223,19 +232,61 @@ impl MessageStore {
     fn trim_main_capacity(&mut self) {
         while self.messages.len() > self.main_capacity {
             if let Some(removed) = self.messages.pop_front() {
-                self.by_id.remove(&removed.message_id);
+                if Some(removed.message_id) != self.anchor_message_id {
+                    self.by_id.remove(&removed.message_id);
+                    self.remove_message_from_user_index(&removed);
+                }
                 self.main_start_index = self.main_start_index.saturating_sub(1);
             }
         }
     }
 
+    fn remove_message_from_user_index(&mut self, message: &DanmuMessage) {
+        let is_selected_uid = self.selected_uid.as_deref() == Some(message.uid.as_str());
+        let Some(user_ids) = self.ids_by_uid.get_mut(&message.uid) else {
+            return;
+        };
+        let Some(remove_index) = user_ids.iter().position(|id| *id == message.message_id) else {
+            return;
+        };
+
+        user_ids.remove(remove_index);
+        if is_selected_uid && remove_index < self.person_start_index {
+            self.person_start_index = self.person_start_index.saturating_sub(1);
+        }
+        if is_selected_uid {
+            self.person_start_index = clamp_viewport_start(
+                self.person_start_index,
+                user_ids.len(),
+                self.person_viewport_size,
+            );
+        }
+    }
+
     fn trim_user_capacity(&mut self, uid: &str) {
+        let preserved_anchor_id = if self.selected_uid.as_deref() == Some(uid) {
+            self.anchor_message_id
+        } else {
+            None
+        };
         let Some(user_ids) = self.ids_by_uid.get_mut(uid) else {
             return;
         };
         while user_ids.len() > self.per_user_capacity {
-            user_ids.pop_front();
-            self.person_start_index = self.person_start_index.saturating_sub(1);
+            let remove_index = preserved_anchor_id
+                .filter(|anchor_id| user_ids.iter().any(|id| id == anchor_id))
+                .and_then(|anchor_id| user_ids.iter().position(|id| *id != anchor_id))
+                .unwrap_or(0);
+
+            user_ids.remove(remove_index);
+            if remove_index < self.person_start_index {
+                self.person_start_index = self.person_start_index.saturating_sub(1);
+            }
+            self.person_start_index = clamp_viewport_start(
+                self.person_start_index,
+                user_ids.len(),
+                self.person_viewport_size,
+            );
         }
     }
 
@@ -246,6 +297,24 @@ impl MessageStore {
         if !self.hover_frozen && !self.person_manual_viewport {
             self.person_start_index = self.compute_anchored_person_start();
         }
+    }
+
+    fn is_main_viewport_at_bottom(&self) -> bool {
+        self.messages.len() > self.main_viewport_size
+            && self.main_start_index
+                >= max_viewport_start(self.messages.len(), self.main_viewport_size)
+    }
+
+    fn pin_main_viewport_to_bottom(&mut self) {
+        self.main_start_index = max_viewport_start(self.messages.len(), self.main_viewport_size);
+    }
+
+    fn clamp_main_viewport_start(&mut self) {
+        self.main_start_index = clamp_viewport_start(
+            self.main_start_index,
+            self.messages.len(),
+            self.main_viewport_size,
+        );
     }
 
     fn selected_user_ids(&self) -> Vec<u64> {
@@ -280,16 +349,19 @@ impl MessageStore {
         };
 
         let latest_start = user_ids.len().saturating_sub(self.person_viewport_size);
-        let latest_end = latest_start + self.person_viewport_size.saturating_sub(1);
-        if anchor_index >= latest_start && anchor_index <= latest_end {
+        if self.person_viewport_size <= 1 {
+            return anchor_index.min(latest_start);
+        }
+
+        if anchor_index == 0 {
+            return 0;
+        }
+
+        if anchor_index > latest_start {
             return latest_start;
         }
 
-        if anchor_index < latest_start {
-            return anchor_index.saturating_sub(1);
-        }
-
-        latest_start
+        anchor_index.saturating_sub(1)
     }
 }
 
@@ -299,7 +371,7 @@ fn scroll_viewport_start(
     item_count: usize,
     viewport_size: usize,
 ) -> usize {
-    let max_start = item_count.saturating_sub(viewport_size);
+    let max_start = max_viewport_start(item_count, viewport_size);
     let next = if delta >= 0 {
         start_index.saturating_add(delta as usize)
     } else {
@@ -309,7 +381,11 @@ fn scroll_viewport_start(
 }
 
 fn clamp_viewport_start(start_index: usize, item_count: usize, viewport_size: usize) -> usize {
-    start_index.min(item_count.saturating_sub(viewport_size))
+    start_index.min(max_viewport_start(item_count, viewport_size))
+}
+
+fn max_viewport_start(item_count: usize, viewport_size: usize) -> usize {
+    item_count.saturating_sub(viewport_size)
 }
 
 fn clamp_viewport_size(value: usize) -> usize {
@@ -388,8 +464,23 @@ mod tests {
                 .iter()
                 .map(|message| format!("{}:{}", message.content, message.read))
                 .collect::<Vec<_>>(),
-            ["B:false", "C:true", "D:true", "E:false"]
+            ["A:true", "B:false", "C:true", "D:true", "E:false"]
         );
+    }
+
+    #[test]
+    fn main_viewport_stays_full_when_acknowledgements_advance_near_the_end() {
+        let mut store = MessageStore::new(1000, 50);
+        store.main_viewport_size = 5;
+        for content in ["A", "B", "C", "D", "E", "F", "G"] {
+            store.ingest(raw(content, 1, 1)).unwrap();
+        }
+
+        store.ack_message(1);
+        store.ack_message(2);
+        store.ack_message(3);
+
+        assert_eq!(main_contents(&store), ["C", "D", "E", "F", "G"]);
     }
 
     #[test]
@@ -414,6 +505,36 @@ mod tests {
     }
 
     #[test]
+    fn main_viewport_keeps_bottom_pinned_when_new_message_arrives_at_bottom() {
+        let mut store = MessageStore::new(1000, 50);
+        store.main_viewport_size = 5;
+        for content in ["A", "B", "C", "D", "E", "F", "G"] {
+            store.ingest(raw(content, 1, 1)).unwrap();
+        }
+
+        store.scroll_main_viewport(99);
+        assert_eq!(main_contents(&store), ["C", "D", "E", "F", "G"]);
+
+        store.ingest(raw("H", 1, 1)).unwrap();
+        assert_eq!(main_contents(&store), ["D", "E", "F", "G", "H"]);
+    }
+
+    #[test]
+    fn main_viewport_keeps_bottom_pinned_when_viewport_shrinks_at_bottom() {
+        let mut store = MessageStore::new(1000, 50);
+        store.main_viewport_size = 5;
+        for content in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"] {
+            store.ingest(raw(content, 1, 1)).unwrap();
+        }
+
+        store.scroll_main_viewport(99);
+        assert_eq!(main_contents(&store), ["F", "G", "H", "I", "J"]);
+
+        store.set_viewport_sizes(Some(3), None);
+        assert_eq!(main_contents(&store), ["H", "I", "J"]);
+    }
+
+    #[test]
     fn person_anchor_stops_at_second_row_and_counts_hidden_newer() {
         let mut store = MessageStore::new(1000, 50);
         store.person_viewport_size = 5;
@@ -430,6 +551,93 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(visible, ["M2", "M3", "M4", "M5", "M6"]);
         assert_eq!(panel.hidden_newer_count, 2);
+    }
+
+    #[test]
+    fn person_anchor_stays_on_second_row_instead_of_bouncing_through_first_row() {
+        let mut store = MessageStore::new(1000, 50);
+        store.person_viewport_size = 5;
+        for i in 1..=5 {
+            store.ingest(raw(&format!("M{i}"), 42, i)).unwrap();
+        }
+
+        store.select_user_anchor(3);
+        store.ingest(raw("M6", 42, 6)).unwrap();
+        assert_eq!(person_contents(&store), ["M2", "M3", "M4", "M5", "M6"]);
+
+        store.ingest(raw("M7", 42, 7)).unwrap();
+        let panel = store.snapshot().person_panel;
+        let visible = panel
+            .visible_messages
+            .iter()
+            .map(|message| message.content.clone())
+            .collect::<Vec<_>>();
+        let anchor_row = panel
+            .visible_messages
+            .iter()
+            .position(|message| Some(message.message_id) == panel.anchor_message_id);
+
+        assert_eq!(visible, ["M2", "M3", "M4", "M5", "M6"]);
+        assert_eq!(anchor_row, Some(1));
+        assert_eq!(panel.hidden_newer_count, 1);
+    }
+
+    #[test]
+    fn person_anchor_is_preserved_when_trimming_per_user_message_cache() {
+        let mut store = MessageStore::new(1000, 5);
+        store.person_viewport_size = 5;
+        for i in 1..=5 {
+            store.ingest(raw(&format!("M{i}"), 42, i)).unwrap();
+        }
+
+        store.select_user_anchor(3);
+        for i in 6..=8 {
+            store.ingest(raw(&format!("M{i}"), 42, i)).unwrap();
+        }
+
+        let panel = store.snapshot().person_panel;
+        let visible = panel
+            .visible_messages
+            .iter()
+            .map(|message| message.content.clone())
+            .collect::<Vec<_>>();
+        let anchor_visible = panel
+            .visible_messages
+            .iter()
+            .any(|message| Some(message.message_id) == panel.anchor_message_id);
+
+        assert!(anchor_visible);
+        assert_eq!(visible, ["M3", "M5", "M6", "M7", "M8"]);
+    }
+
+    #[test]
+    fn person_anchor_is_preserved_when_trimming_main_message_cache() {
+        let mut store = MessageStore::new(5, 10);
+        store.main_viewport_size = 5;
+        store.person_viewport_size = 5;
+        for i in 1..=5 {
+            store.ingest(raw(&format!("M{i}"), 42, i)).unwrap();
+        }
+
+        store.select_user_anchor(3);
+        for i in 6..=8 {
+            store.ingest(raw(&format!("M{i}"), 42, i)).unwrap();
+        }
+
+        let panel = store.snapshot().person_panel;
+        let visible = panel
+            .visible_messages
+            .iter()
+            .map(|message| message.content.clone())
+            .collect::<Vec<_>>();
+        let anchor_visible = panel
+            .visible_messages
+            .iter()
+            .any(|message| Some(message.message_id) == panel.anchor_message_id);
+
+        assert!(anchor_visible);
+        assert_eq!(visible, ["M3", "M4", "M5", "M6", "M7"]);
+        assert_eq!(panel.hidden_newer_count, 1);
     }
 
     #[test]

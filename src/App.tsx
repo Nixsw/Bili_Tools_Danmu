@@ -31,7 +31,10 @@ import {
   getWealthMedalUrl
 } from "./ui/biliBadges";
 import { getPersonPanelResizePlan } from "./ui/panelWindow";
-import { estimateViewportCapacity } from "./ui/viewportCapacity";
+import {
+  estimateViewportCapacity,
+  shouldDistributeViewportSlack
+} from "./ui/viewportCapacity";
 import {
   getMessageContextMenuLabels,
   shouldSuppressNativeContextMenu,
@@ -71,7 +74,9 @@ export default function App() {
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const contentGridRef = useRef<HTMLElement>(null);
+  const mainListRef = useRef<HTMLDivElement>(null);
   const personListRef = useRef<HTMLDivElement>(null);
+  const lastMainViewportSizeRef = useRef<number | null>(null);
   const lastPersonViewportSizeRef = useRef<number | null>(null);
   const [contentWidth, setContentWidth] = useState(
     MAIN_READABLE_WIDTH + PERSON_PANEL_DEFAULT_WIDTH
@@ -82,6 +87,28 @@ export default function App() {
   const [splitDragging, setSplitDragging] = useState(false);
   const [messageContextMenu, setMessageContextMenu] =
     useState<MessageContextMenuState | null>(null);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let cancelled = false;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        if (!cancelled) {
+          getCurrentWindow().show().catch(() => undefined);
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, []);
 
   useEffect(() => {
     let dispose: (() => void) | undefined;
@@ -165,6 +192,9 @@ export default function App() {
   const personMeasurementKey = snapshot.personPanel.visibleMessages
     .map((message) => message.messageId)
     .join(":");
+  const mainMeasurementKey = snapshot.mainVisible
+    .map((message) => message.messageId)
+    .join(":");
   const personWindowVisibleRef = useRef(false);
 
   useEffect(() => {
@@ -198,6 +228,52 @@ export default function App() {
       personWindowVisibleRef.current = false;
     }
   }, [config.panelCollapsed, personVisible]);
+
+  useEffect(() => {
+    const list = mainListRef.current;
+    if (!list) {
+      return;
+    }
+
+    let frame = 0;
+    const syncCapacity = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const rows = Array.from(
+          list.querySelectorAll<HTMLElement>(".message-card")
+        );
+        if (rows.length === 0) {
+          return;
+        }
+
+        const style = window.getComputedStyle(list);
+        const capacity = estimateViewportCapacity({
+          containerHeight: list.clientHeight,
+          rowHeights: rows.map((row) => row.getBoundingClientRect().height),
+          gap: cssNumber(style.rowGap),
+          paddingTop: cssNumber(style.paddingTop),
+          paddingBottom: cssNumber(style.paddingBottom),
+          max: 100
+        });
+
+        if (capacity === lastMainViewportSizeRef.current) {
+          return;
+        }
+
+        lastMainViewportSizeRef.current = capacity;
+        void client.setViewportSizes({ mainViewportSize: capacity });
+      });
+    };
+
+    syncCapacity();
+    const observer = new ResizeObserver(syncCapacity);
+    observer.observe(list);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [client, config.fontSize, mainMeasurementKey]);
 
   useEffect(() => {
     if (!personVisible) {
@@ -261,6 +337,10 @@ export default function App() {
     "--person-panel-width": `${splitLayout.personWidth}px`,
     "--main-panel-width": `${splitLayout.mainWidth}px`
   } as React.CSSProperties;
+  const mainListFilled = shouldDistributeViewportSlack(
+    snapshot.mainVisible.length,
+    lastMainViewportSizeRef.current
+  );
 
   const updateConfig = async (patch: Partial<DisplayConfig>) => {
     const next = await client.updateConfig(patch);
@@ -586,7 +666,10 @@ export default function App() {
         )}
 
         <section className="main-panel" onWheel={onMainWheel}>
-          <div className="message-list">
+          <div
+            className={`message-list ${mainListFilled ? "is-filled" : ""}`}
+            ref={mainListRef}
+          >
             {snapshot.mainVisible.map((message) => (
               <button
                 key={message.messageId}

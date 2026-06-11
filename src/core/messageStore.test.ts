@@ -119,6 +119,7 @@ describe("main message viewport", () => {
     store.ackUserMessages("1");
 
     expect(store.getMainVisible().map((msg) => `${msg.content}:${msg.read}`)).toEqual([
+      "A:true",
       "B:false",
       "C:true",
       "D:true",
@@ -143,6 +144,25 @@ describe("main message viewport", () => {
     ]);
 
     store.ackMessage(1);
+
+    expect(store.getMainVisible().map((msg) => msg.content)).toEqual([
+      "C",
+      "D",
+      "E",
+      "F",
+      "G"
+    ]);
+  });
+
+  it("keeps the main viewport full when acknowledgements advance near the end", () => {
+    const store = createMessageStore({ mainViewportSize: 5, personViewportSize: 5 });
+    "ABCDEFG".split("").forEach((content, index) => {
+      store.ingest(baseRaw({ content, uid: 1, timestampMs: 1_000 + index }));
+    });
+
+    store.ackMessage(1);
+    store.ackMessage(2);
+    store.ackMessage(3);
 
     expect(store.getMainVisible().map((msg) => msg.content)).toEqual([
       "C",
@@ -195,6 +215,56 @@ describe("main message viewport", () => {
       "I"
     ]);
   });
+
+  it("keeps the bottom pinned when a new message arrives while already at the bottom", () => {
+    const store = createMessageStore({ mainViewportSize: 5, personViewportSize: 5 });
+    "ABCDEFG".split("").forEach((content, index) => {
+      store.ingest(baseRaw({ content, uid: 1, timestampMs: 1_000 + index }));
+    });
+
+    store.scrollMainViewport(99);
+    expect(store.getMainVisible().map((msg) => msg.content)).toEqual([
+      "C",
+      "D",
+      "E",
+      "F",
+      "G"
+    ]);
+
+    store.ingest(baseRaw({ content: "H", uid: 1, timestampMs: 1_008 }));
+
+    expect(store.getMainVisible().map((msg) => msg.content)).toEqual([
+      "D",
+      "E",
+      "F",
+      "G",
+      "H"
+    ]);
+  });
+
+  it("keeps the bottom pinned when the main viewport shrinks at the bottom", () => {
+    const store = createMessageStore({ mainViewportSize: 5, personViewportSize: 5 });
+    "ABCDEFGHIJ".split("").forEach((content, index) => {
+      store.ingest(baseRaw({ content, uid: 1, timestampMs: 1_000 + index }));
+    });
+
+    store.scrollMainViewport(99);
+    expect(store.getMainVisible().map((msg) => msg.content)).toEqual([
+      "F",
+      "G",
+      "H",
+      "I",
+      "J"
+    ]);
+
+    store.setViewportSizes({ mainViewportSize: 3 });
+
+    expect(store.getMainVisible().map((msg) => msg.content)).toEqual([
+      "H",
+      "I",
+      "J"
+    ]);
+  });
 });
 
 describe("person panel anchored viewport", () => {
@@ -233,6 +303,90 @@ describe("person panel anchored viewport", () => {
       "M6"
     ]);
     expect(panel.hiddenNewerCount).toBe(2);
+  });
+
+  it("keeps the anchor on the second row instead of bouncing through the first row", () => {
+    const store = createMessageStore({ mainViewportSize: 8, personViewportSize: 5 });
+    for (let i = 1; i <= 5; i += 1) {
+      store.ingest(baseRaw({ content: `M${i}`, uid: 42, timestampMs: i }));
+    }
+
+    store.selectUserAnchor(3);
+    store.ingest(baseRaw({ content: "M6", uid: 42, timestampMs: 6 }));
+    expect(store.getPersonPanel().visibleMessages.map((msg) => msg.content)).toEqual([
+      "M2",
+      "M3",
+      "M4",
+      "M5",
+      "M6"
+    ]);
+
+    store.ingest(baseRaw({ content: "M7", uid: 42, timestampMs: 7 }));
+
+    const panel = store.getPersonPanel();
+    expect(panel.visibleMessages.map((msg) => msg.content)).toEqual([
+      "M2",
+      "M3",
+      "M4",
+      "M5",
+      "M6"
+    ]);
+    expect(panel.visibleMessages.findIndex((msg) => msg.messageId === panel.anchorMessageId)).toBe(1);
+    expect(panel.hiddenNewerCount).toBe(1);
+  });
+
+  it("preserves the selected anchor when trimming the per-user message cache", () => {
+    const store = createMessageStore({
+      mainViewportSize: 8,
+      personViewportSize: 5,
+      perUserCapacity: 5
+    });
+    for (let i = 1; i <= 5; i += 1) {
+      store.ingest(baseRaw({ content: `M${i}`, uid: 42, timestampMs: i }));
+    }
+
+    store.selectUserAnchor(3);
+    for (let i = 6; i <= 8; i += 1) {
+      store.ingest(baseRaw({ content: `M${i}`, uid: 42, timestampMs: i }));
+    }
+
+    const panel = store.getPersonPanel();
+    expect(panel.visibleMessages.some((msg) => msg.messageId === panel.anchorMessageId)).toBe(true);
+    expect(panel.visibleMessages.map((msg) => msg.content)).toEqual([
+      "M3",
+      "M5",
+      "M6",
+      "M7",
+      "M8"
+    ]);
+  });
+
+  it("preserves the selected anchor when trimming the main message cache", () => {
+    const store = createMessageStore({
+      mainCapacity: 5,
+      perUserCapacity: 10,
+      mainViewportSize: 5,
+      personViewportSize: 5
+    });
+    for (let i = 1; i <= 5; i += 1) {
+      store.ingest(baseRaw({ content: `M${i}`, uid: 42, timestampMs: i }));
+    }
+
+    store.selectUserAnchor(3);
+    for (let i = 6; i <= 8; i += 1) {
+      store.ingest(baseRaw({ content: `M${i}`, uid: 42, timestampMs: i }));
+    }
+
+    const panel = store.getPersonPanel();
+    expect(panel.visibleMessages.some((msg) => msg.messageId === panel.anchorMessageId)).toBe(true);
+    expect(panel.visibleMessages.map((msg) => msg.content)).toEqual([
+      "M3",
+      "M4",
+      "M5",
+      "M6",
+      "M7"
+    ]);
+    expect(panel.hiddenNewerCount).toBe(1);
   });
 
   it("allows the anchor on the first row when no earlier history exists", () => {

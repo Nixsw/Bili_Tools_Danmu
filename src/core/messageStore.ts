@@ -100,6 +100,7 @@ export function createMessageStore(options: MessageStoreOptions) {
 
   const api = {
     ingest(raw: IncomingDanmuRaw) {
+      const keepMainPinnedToBottom = isMainViewportAtBottom();
       const message = normalizeIncomingDanmu(raw, nextMessageId);
       nextMessageId += 1;
       messages.push(message);
@@ -111,6 +112,11 @@ export function createMessageStore(options: MessageStoreOptions) {
 
       trimMainCapacity();
       trimPerUserCapacity(message.uid);
+      if (keepMainPinnedToBottom) {
+        pinMainViewportToBottom();
+      } else {
+        clampMainViewportStart();
+      }
       refreshPersonStartAfterDataChange(message.uid);
 
       return message;
@@ -126,6 +132,7 @@ export function createMessageStore(options: MessageStoreOptions) {
       while (messages[mainStartIndex]?.read) {
         mainStartIndex += 1;
       }
+      clampMainViewportStart();
     },
 
     ackUserMessages(uid: string) {
@@ -146,6 +153,7 @@ export function createMessageStore(options: MessageStoreOptions) {
       while (messages[mainStartIndex]?.read) {
         mainStartIndex += 1;
       }
+      clampMainViewportStart();
     },
 
     selectUserAnchor(messageId: number) {
@@ -193,12 +201,13 @@ export function createMessageStore(options: MessageStoreOptions) {
 
     setViewportSizes(patch: ViewportSizePatch) {
       if (typeof patch.mainViewportSize === "number") {
+        const keepMainPinnedToBottom = isMainViewportAtBottom();
         mainViewportSize = clampViewportSize(patch.mainViewportSize);
-        mainStartIndex = clampViewportStart(
-          mainStartIndex,
-          messages.length,
-          mainViewportSize
-        );
+        if (keepMainPinnedToBottom) {
+          pinMainViewportToBottom();
+        } else {
+          clampMainViewportStart();
+        }
       }
 
       if (typeof patch.personViewportSize === "number") {
@@ -266,8 +275,35 @@ export function createMessageStore(options: MessageStoreOptions) {
       if (!removed) {
         break;
       }
-      byId.delete(removed.messageId);
+      if (removed.messageId !== anchorMessageId) {
+        byId.delete(removed.messageId);
+        removeMessageFromUserIndex(removed);
+      }
       mainStartIndex = Math.max(0, mainStartIndex - 1);
+    }
+  }
+
+  function removeMessageFromUserIndex(message: DanmuMessage) {
+    const userIds = idsByUid.get(message.uid);
+    if (!userIds) {
+      return;
+    }
+
+    const removeIndex = userIds.indexOf(message.messageId);
+    if (removeIndex < 0) {
+      return;
+    }
+
+    userIds.splice(removeIndex, 1);
+    if (message.uid === selectedUid && removeIndex < personStartIndex) {
+      personStartIndex = Math.max(0, personStartIndex - 1);
+    }
+    if (message.uid === selectedUid) {
+      personStartIndex = clampViewportStart(
+        personStartIndex,
+        userIds.length,
+        personViewportSize
+      );
     }
   }
 
@@ -278,9 +314,32 @@ export function createMessageStore(options: MessageStoreOptions) {
     }
 
     while (userIds.length > perUserCapacity) {
-      userIds.shift();
-      personStartIndex = Math.max(0, personStartIndex - 1);
+      const removeIndex = getPerUserTrimIndex(uid, userIds);
+      userIds.splice(removeIndex, 1);
+      if (removeIndex < personStartIndex) {
+        personStartIndex = Math.max(0, personStartIndex - 1);
+      }
+      personStartIndex = clampViewportStart(
+        personStartIndex,
+        userIds.length,
+        personViewportSize
+      );
     }
+  }
+
+  function getPerUserTrimIndex(uid: string, userIds: number[]) {
+    if (selectedUid !== uid || !anchorMessageId) {
+      return 0;
+    }
+
+    if (!userIds.includes(anchorMessageId)) {
+      return 0;
+    }
+
+    const firstNonAnchorIndex = userIds.findIndex(
+      (messageId) => messageId !== anchorMessageId
+    );
+    return firstNonAnchorIndex >= 0 ? firstNonAnchorIndex : 0;
   }
 
   function refreshPersonStartAfterDataChange(uid: string) {
@@ -291,6 +350,25 @@ export function createMessageStore(options: MessageStoreOptions) {
     if (!hoverFrozen && !personManualViewport) {
       personStartIndex = computeAnchoredPersonStart();
     }
+  }
+
+  function isMainViewportAtBottom() {
+    return (
+      messages.length > mainViewportSize &&
+      mainStartIndex >= maxViewportStart(messages.length, mainViewportSize)
+    );
+  }
+
+  function pinMainViewportToBottom() {
+    mainStartIndex = maxViewportStart(messages.length, mainViewportSize);
+  }
+
+  function clampMainViewportStart() {
+    mainStartIndex = clampViewportStart(
+      mainStartIndex,
+      messages.length,
+      mainViewportSize
+    );
   }
 
   function getSelectedUserIds() {
@@ -325,16 +403,19 @@ export function createMessageStore(options: MessageStoreOptions) {
     }
 
     const latestStart = Math.max(0, userIds.length - personViewportSize);
-    const latestEnd = latestStart + personViewportSize - 1;
-    if (anchorIndex >= latestStart && anchorIndex <= latestEnd) {
+    if (personViewportSize <= 1) {
+      return Math.min(anchorIndex, latestStart);
+    }
+
+    if (anchorIndex === 0) {
+      return 0;
+    }
+
+    if (anchorIndex > latestStart) {
       return latestStart;
     }
 
-    if (anchorIndex < latestStart) {
-      return anchorIndex > 0 ? anchorIndex - 1 : 0;
-    }
-
-    return latestStart;
+    return anchorIndex - 1;
   }
 
   function scrollViewportStart(
@@ -343,7 +424,7 @@ export function createMessageStore(options: MessageStoreOptions) {
     itemCount: number,
     viewportSize: number
   ) {
-    const maxStart = Math.max(0, itemCount - viewportSize);
+    const maxStart = maxViewportStart(itemCount, viewportSize);
     const next = startIndex + Math.trunc(delta);
     return Math.min(maxStart, Math.max(0, next));
   }
@@ -353,7 +434,11 @@ export function createMessageStore(options: MessageStoreOptions) {
     itemCount: number,
     viewportSize: number
   ) {
-    return Math.min(Math.max(0, itemCount - viewportSize), startIndex);
+    return Math.min(maxViewportStart(itemCount, viewportSize), startIndex);
+  }
+
+  function maxViewportStart(itemCount: number, viewportSize: number) {
+    return Math.max(0, itemCount - viewportSize);
   }
 
   function clampViewportSize(value: number) {

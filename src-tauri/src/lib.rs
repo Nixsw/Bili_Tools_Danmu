@@ -6,9 +6,9 @@ mod ws_client;
 
 use app_config::{load_config, save_window_position, save_window_size};
 use commands::{
-    ack_message, ack_user_messages, connect_ws, disconnect_ws, get_config, get_snapshot, reconnect_ws,
-    scroll_main_viewport, scroll_person_viewport, select_user_anchor, set_person_panel_hover,
-    set_viewport_sizes, update_config,
+    ack_message, ack_user_messages, connect_ws, disconnect_ws, get_config, get_snapshot,
+    reconnect_ws, scroll_main_viewport, scroll_person_viewport, select_user_anchor,
+    set_person_panel_hover, set_viewport_sizes, update_config,
 };
 use std::sync::{Arc, Mutex};
 use store::MessageStore;
@@ -78,6 +78,7 @@ fn ensure_main_window(app: &tauri::App) -> tauri::Result<()> {
         .min_inner_size(420.0, 520.0)
         .decorations(false)
         .transparent(true)
+        .visible(false)
         .always_on_top(true)
         .resizable(true)
         .build()?;

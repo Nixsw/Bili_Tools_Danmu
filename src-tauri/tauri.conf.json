@@ -23,7 +23,7 @@
         "transparent": true,
         "alwaysOnTop": true,
         "shadow": true,
-        "visible": true
+        "visible": false
       }
     ],
     "security": {

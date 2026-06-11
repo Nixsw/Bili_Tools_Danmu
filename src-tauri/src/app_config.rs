@@ -141,11 +141,7 @@ fn should_persist_window_size(width: u32, height: u32) -> bool {
     width >= MIN_WINDOW_WIDTH && height >= MIN_WINDOW_HEIGHT
 }
 
-fn should_persist_window_size_for_panel(
-    width: u32,
-    height: u32,
-    panel_collapsed: bool,
-) -> bool {
+fn should_persist_window_size_for_panel(width: u32, height: u32, panel_collapsed: bool) -> bool {
     if panel_collapsed {
         return should_persist_window_size(width, height);
     }
