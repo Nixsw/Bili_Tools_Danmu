@@ -1,18 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ChevronLeft,
-  ChevronRight,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Settings,
-  X
+  ChevronsLeft,
+  ChevronsRight,
+  Minus,
+  Settings
 } from "lucide-react";
-import {
-  getCurrentWindow,
-  PhysicalPosition,
-  PhysicalSize
-} from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createDanmuClient, type DisplayConfig } from "./api/client";
 import type { AppSnapshot, DanmuMessage } from "./core/types";
 import { formatHhMmSs, formatMmSs, getGuardNicknameColor } from "./ui/format";
@@ -30,7 +24,20 @@ import {
   getGuardMedalIconUrl,
   getWealthMedalUrl
 } from "./ui/biliBadges";
-import { getPersonPanelResizePlan } from "./ui/panelWindow";
+import { getPersonPanelWindowResizePlan } from "./ui/panelWindow";
+import {
+  getEffectivePanelCollapsed,
+  getPanelTransitionClassName
+} from "./ui/panelTransition";
+import {
+  getPersonPanelToggleIcon,
+  getWindowDismissAction
+} from "./ui/windowActions";
+import {
+  formatTransientConnectionStatus,
+  getConnectedToastDeadlineMs,
+  getRetryDeadlineMs
+} from "./ui/connectionStatus";
 import {
   estimateViewportCapacity,
   shouldDistributeViewportSlack
@@ -40,6 +47,7 @@ import {
   shouldSuppressNativeContextMenu,
   type MessageContextMenuScope
 } from "./ui/contextMenu";
+import { createConnectApiUrlPatch } from "./ui/settingsPanel";
 import "./styles.css";
 
 const initialSnapshot: AppSnapshot = {
@@ -67,11 +75,20 @@ export default function App() {
   const client = useMemo(() => createDanmuClient(), []);
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [config, setConfig] = useState<DisplayConfig>({
-    websocketUrl: "ws://127.0.0.1:17878",
+    connectApiUrl: "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect",
     opacity: 0.82,
     fontSize: 14,
     panelCollapsed: false
   });
+  const [connectApiUrlDraft, setConnectApiUrlDraft] = useState(
+    "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect"
+  );
+  const [connectApiSaveStatus, setConnectApiSaveStatus] = useState("");
+  const [statusNowMs, setStatusNowMs] = useState(() => Date.now());
+  const [retryDeadlineMs, setRetryDeadlineMs] = useState<number | null>(null);
+  const [connectedToastDeadlineMs, setConnectedToastDeadlineMs] = useState<
+    number | null
+  >(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const contentGridRef = useRef<HTMLElement>(null);
   const mainListRef = useRef<HTMLDivElement>(null);
@@ -85,6 +102,10 @@ export default function App() {
     null
   );
   const [splitDragging, setSplitDragging] = useState(false);
+  const [pendingPanelCollapsed, setPendingPanelCollapsed] = useState<
+    boolean | null
+  >(null);
+  const [panelGeometryChanging, setPanelGeometryChanging] = useState(false);
   const [messageContextMenu, setMessageContextMenu] =
     useState<MessageContextMenuState | null>(null);
 
@@ -163,6 +184,31 @@ export default function App() {
   }, [messageContextMenu]);
 
   useEffect(() => {
+    const nowMs = Date.now();
+    setStatusNowMs(nowMs);
+    setRetryDeadlineMs(getRetryDeadlineMs(snapshot.connectionStatus, nowMs));
+    setConnectedToastDeadlineMs(
+      getConnectedToastDeadlineMs(snapshot.connectionStatus, nowMs)
+    );
+  }, [snapshot.connectionStatus]);
+
+  useEffect(() => {
+    setConnectApiUrlDraft(config.connectApiUrl);
+  }, [config.connectApiUrl]);
+
+  useEffect(() => {
+    if (retryDeadlineMs === null && connectedToastDeadlineMs === null) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setStatusNowMs(Date.now());
+    }, 250);
+
+    return () => window.clearInterval(timer);
+  }, [retryDeadlineMs, connectedToastDeadlineMs]);
+
+  useEffect(() => {
     const suppress = (event: MouseEvent) => {
       if (shouldSuppressNativeContextMenu("background")) {
         event.preventDefault();
@@ -176,8 +222,12 @@ export default function App() {
     };
   }, []);
 
-  const personVisible = isPersonPanelVisible(
+  const effectivePanelCollapsed = getEffectivePanelCollapsed(
     config.panelCollapsed,
+    pendingPanelCollapsed
+  );
+  const personVisible = isPersonPanelVisible(
+    effectivePanelCollapsed,
     snapshot.personPanel.selectedUid
   );
   const splitLayout = useMemo(
@@ -222,12 +272,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (panelGeometryChanging || pendingPanelCollapsed !== null) {
+      return;
+    }
+
     if (personVisible) {
       personWindowVisibleRef.current = true;
     } else if (config.panelCollapsed) {
       personWindowVisibleRef.current = false;
     }
-  }, [config.panelCollapsed, personVisible]);
+  }, [
+    config.panelCollapsed,
+    panelGeometryChanging,
+    pendingPanelCollapsed,
+    personVisible
+  ]);
 
   useEffect(() => {
     const list = mainListRef.current;
@@ -341,10 +400,32 @@ export default function App() {
     snapshot.mainVisible.length,
     lastMainViewportSizeRef.current
   );
+  const connectionStatusText = formatTransientConnectionStatus(
+    snapshot.connectionStatus,
+    retryDeadlineMs,
+    connectedToastDeadlineMs,
+    statusNowMs
+  );
+  const personPanelToggleIcon = getPersonPanelToggleIcon(personVisible);
+  const windowDismissAction = getWindowDismissAction();
 
   const updateConfig = async (patch: Partial<DisplayConfig>) => {
     const next = await client.updateConfig(patch);
     setConfig(next);
+    return next;
+  };
+
+  const saveConnectApiUrl = async () => {
+    setConnectApiSaveStatus("保存中");
+    try {
+      const next = await updateConfig(
+        createConnectApiUrlPatch(connectApiUrlDraft)
+      );
+      setConnectApiUrlDraft(next.connectApiUrl);
+      setConnectApiSaveStatus("已保存");
+    } catch (error) {
+      setConnectApiSaveStatus(`保存失败：${String(error)}`);
+    }
   };
 
   const resizeWindowForPersonPanel = async (nextVisible: boolean) => {
@@ -353,17 +434,19 @@ export default function App() {
     }
 
     const window = getCurrentWindow();
-    const [position, size, scaleFactor] = await Promise.all([
+    const [position, outerSize, innerSize, scaleFactor] = await Promise.all([
       window.outerPosition(),
+      window.outerSize(),
       window.innerSize(),
       window.scaleFactor()
     ]);
-    const plan = getPersonPanelResizePlan({
+    const plan = getPersonPanelWindowResizePlan({
       currentVisible: personWindowVisibleRef.current,
       nextVisible,
       x: position.x,
-      width: size.width,
-      height: size.height,
+      outerWidth: outerSize.width,
+      outerHeight: outerSize.height,
+      innerWidth: innerSize.width,
       scaleFactor
     });
 
@@ -371,23 +454,37 @@ export default function App() {
       return;
     }
 
-    await window.setPosition(new PhysicalPosition(plan.x, position.y));
-    await window.setSize(new PhysicalSize(plan.width, plan.height));
+    setContentWidth(plan.contentWidth);
+    await client.setMainWindowGeometry({
+      x: plan.x,
+      y: position.y,
+      width: plan.width,
+      height: plan.height
+    });
     personWindowVisibleRef.current = nextVisible;
   };
 
   const updatePersonPanelCollapsed = async (panelCollapsed: boolean) => {
     const nextVisible = !panelCollapsed;
-    await resizeWindowForPersonPanel(nextVisible).catch(() => undefined);
-    await updateConfig({ panelCollapsed });
+    setPendingPanelCollapsed(panelCollapsed);
+    setPanelGeometryChanging(true);
+
+    try {
+      await nextAnimationFrame();
+      await resizeWindowForPersonPanel(nextVisible).catch(() => undefined);
+      await updateConfig({ panelCollapsed });
+    } finally {
+      await nextAnimationFrame();
+      setPendingPanelCollapsed(null);
+      setPanelGeometryChanging(false);
+    }
   };
 
   const onMainMessageClick = async (message: DanmuMessage) => {
     setMessageContextMenu(null);
     await client.selectUserAnchor(message.messageId);
     await client.ackMessage(message.messageId);
-    await resizeWindowForPersonPanel(true).catch(() => undefined);
-    await updateConfig({ panelCollapsed: false });
+    await updatePersonPanelCollapsed(false);
   };
 
   const onPersonMessageClick = async (message: DanmuMessage) => {
@@ -526,15 +623,26 @@ export default function App() {
         <div className="drag-title">
           <span>看弹幕工具</span>
           <span className="status-dot" data-state={snapshot.connected ? "on" : "off"} />
+          {connectionStatusText ? (
+            <span className="connection-status-text" title={snapshot.connectionStatus}>
+              {connectionStatusText}
+            </span>
+          ) : null}
         </div>
 
         <div className="window-actions">
           <button
             className="icon-button"
             title={personVisible ? "收起指定人记录" : "展开指定人记录"}
-            onClick={() => updatePersonPanelCollapsed(!config.panelCollapsed)}
+            onClick={() =>
+              updatePersonPanelCollapsed(!effectivePanelCollapsed)
+            }
           >
-            {personVisible ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
+            {personPanelToggleIcon === "chevronsLeft" ? (
+              <ChevronsLeft size={15} />
+            ) : (
+              <ChevronsRight size={15} />
+            )}
           </button>
           <button
             className="icon-button"
@@ -545,17 +653,10 @@ export default function App() {
           </button>
           <button
             className="icon-button"
-            title="最小化"
+            title={windowDismissAction.title}
             onClick={() => getCurrentWindow().minimize().catch(() => undefined)}
           >
-            <ChevronLeft size={15} />
-          </button>
-          <button
-            className="icon-button"
-            title="关闭"
-            onClick={() => getCurrentWindow().hide().catch(() => undefined)}
-          >
-            <X size={15} />
+            <Minus size={15} />
           </button>
         </div>
       </header>
@@ -563,12 +664,21 @@ export default function App() {
       {settingsOpen && (
         <section className="settings-popover">
           <label>
-            <span>WebSocket</span>
+            <span>连接接口</span>
             <input
-              value={config.websocketUrl}
-              onChange={(event) => updateConfig({ websocketUrl: event.target.value })}
+              value={connectApiUrlDraft}
+              onChange={(event) => {
+                setConnectApiUrlDraft(event.target.value);
+                setConnectApiSaveStatus("");
+              }}
             />
           </label>
+          <div className="settings-actions">
+            <span>{connectApiSaveStatus}</span>
+            <button type="button" onClick={saveConnectApiUrl}>
+              保存接口
+            </button>
+          </div>
           <label>
             <span>透明度</span>
             <input
@@ -600,9 +710,11 @@ export default function App() {
 
       <section
         ref={contentGridRef}
-        className={`content-grid ${personVisible ? "with-person" : ""} ${
-          splitDragging ? "is-splitting" : ""
-        }`}
+        className={getPanelTransitionClassName({
+          personVisible,
+          splitDragging,
+          panelGeometryChanging
+        })}
       >
         <aside
           className="person-panel"
@@ -625,7 +737,7 @@ export default function App() {
               title="收起"
               onClick={() => updatePersonPanelCollapsed(true)}
             >
-              <ChevronRight size={15} />
+              <ChevronsRight size={15} />
             </button>
           </div>
           <div className="person-list" ref={personListRef}>
@@ -635,6 +747,8 @@ export default function App() {
                   snapshot.personPanel.anchorMessageId === message.messageId
                     ? "is-anchor"
                     : ""
+                } ${
+                  message.messageType === "superChat" ? "is-super-chat" : ""
                 }`}
                 key={message.messageId}
                 onClick={() => onPersonMessageClick(message)}
@@ -643,7 +757,12 @@ export default function App() {
                 }
               >
                 <span className="time">{formatMmSs(message.timestampMs)}</span>
-                <span className="person-content">{message.content}</span>
+                <span className="person-content">
+                  {message.messageType === "superChat" && (
+                    <SuperChatBadge message={message} compact />
+                  )}
+                  {message.content}
+                </span>
               </button>
             ))}
           </div>
@@ -673,11 +792,16 @@ export default function App() {
             {snapshot.mainVisible.map((message) => (
               <button
                 key={message.messageId}
-                className={`message-card ${message.read ? "is-read" : ""}`}
+                className={`message-card ${message.read ? "is-read" : ""} ${
+                  message.messageType === "superChat" ? "is-super-chat" : ""
+                }`}
                 onClick={() => onMainMessageClick(message)}
                 onContextMenu={(event) => openMessageContextMenu(event, message, "main")}
               >
                 <span className="meta-line">
+                  {message.messageType === "superChat" && (
+                    <SuperChatBadge message={message} />
+                  )}
                   <WealthMedal level={message.userLevel} />
                   <FanMedal message={message} />
                   <strong
@@ -761,6 +885,27 @@ async function copyText(text: string) {
   textarea.select();
   document.execCommand("copy");
   textarea.remove();
+}
+
+function nextAnimationFrame() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
+function SuperChatBadge({
+  message,
+  compact = false
+}: {
+  message: DanmuMessage;
+  compact?: boolean;
+}) {
+  const price = message.superChat?.price;
+  return (
+    <span className={`sc-badge ${compact ? "is-compact" : ""}`}>
+      SC{typeof price === "number" && price > 0 ? ` ¥${price}` : ""}
+    </span>
+  );
 }
 
 function WealthMedal({ level }: { level: number }) {

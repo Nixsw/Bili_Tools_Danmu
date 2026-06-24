@@ -4,7 +4,8 @@ import type {
   FanMedalColors,
   GuardType,
   IncomingDanmuRaw,
-  PersonPanelSnapshot
+  PersonPanelSnapshot,
+  SuperChatInfo
 } from "./types";
 
 interface MessageStoreOptions {
@@ -26,9 +27,13 @@ export function normalizeIncomingDanmu(
   raw: IncomingDanmuRaw,
   messageId: number
 ): DanmuMessage {
+  const messageType = raw.messageType === "superChat" ? "superChat" : "danmu";
   const contentLength = Array.from(raw.content ?? "").length;
-  if (contentLength < 1 || contentLength > 40) {
-    throw new Error("content length must be between 1 and 40 characters");
+  const maxContentLength = messageType === "superChat" ? 120 : 40;
+  if (contentLength < 1 || contentLength > maxContentLength) {
+    throw new Error(
+      `content length must be between 1 and ${maxContentLength} characters`
+    );
   }
 
   assertRange("userLevel", raw.userLevel, 0, 100);
@@ -51,6 +56,10 @@ export function normalizeIncomingDanmu(
     userLevel: raw.userLevel,
     fanLevel: raw.fanLevel,
     guardType: raw.guardType as GuardType,
+    messageType,
+    ...(messageType === "superChat"
+      ? { superChat: normalizeSuperChat(raw.superChat) }
+      : {}),
     ...(fanMedalColors ? { fanMedalColors } : {}),
     timestampMs,
     read: false
@@ -72,6 +81,30 @@ function normalizeFanMedalColors(colors?: FanMedalColors) {
   for (const key of ["start", "end", "border", "text", "level"] as const) {
     const value = colors[key];
     if (typeof value === "string" && value.trim().length > 0) {
+      normalized[key] = value;
+    }
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeSuperChat(superChat?: SuperChatInfo) {
+  if (!superChat) {
+    return undefined;
+  }
+
+  const normalized: SuperChatInfo = {};
+  if (typeof superChat.id === "string" && superChat.id.trim().length > 0) {
+    normalized.id = superChat.id;
+  }
+  for (const key of [
+    "price",
+    "startTimeMs",
+    "endTimeMs",
+    "durationSec"
+  ] as const) {
+    const value = superChat[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
       normalized[key] = value;
     }
   }

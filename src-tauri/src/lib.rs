@@ -1,4 +1,5 @@
 mod app_config;
+mod bilibili;
 mod commands;
 mod models;
 mod store;
@@ -7,8 +8,9 @@ mod ws_client;
 use app_config::{load_config, save_window_position, save_window_size};
 use commands::{
     ack_message, ack_user_messages, connect_ws, disconnect_ws, get_config, get_snapshot,
-    reconnect_ws, scroll_main_viewport, scroll_person_viewport, select_user_anchor,
-    set_person_panel_hover, set_viewport_sizes, update_config,
+    probe_bilibili_connection, reconnect_ws, scroll_main_viewport, scroll_person_viewport,
+    select_user_anchor, set_main_window_geometry, set_person_panel_hover, set_viewport_sizes,
+    update_config,
 };
 use std::sync::{Arc, Mutex};
 use store::MessageStore;
@@ -21,6 +23,7 @@ use tauri::{
 pub struct AppState {
     pub inner: Arc<Mutex<RuntimeState>>,
     pub ws_task: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+    pub connect_cache: Arc<Mutex<bilibili::ConnectApiCache>>,
 }
 
 pub struct RuntimeState {
@@ -40,6 +43,7 @@ pub fn run() {
             let state = AppState {
                 inner: runtime_state.clone(),
                 ws_task: Arc::new(Mutex::new(None)),
+                connect_cache: Arc::new(Mutex::new(bilibili::ConnectApiCache::default())),
             };
             app.manage(state);
             ensure_main_window(app)?;
@@ -55,13 +59,15 @@ pub fn run() {
             connect_ws,
             disconnect_ws,
             reconnect_ws,
+            probe_bilibili_connection,
             ack_message,
             ack_user_messages,
             select_user_anchor,
             set_person_panel_hover,
             scroll_main_viewport,
             scroll_person_viewport,
-            set_viewport_sizes
+            set_viewport_sizes,
+            set_main_window_geometry
         ])
         .run(tauri::generate_context!())
         .expect("failed to run DanmuTools");

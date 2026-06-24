@@ -11,9 +11,10 @@ const MIN_WINDOW_HEIGHT: u32 = 520;
 const WINDOWS_HIDDEN_WINDOW_POSITION: i32 = -30000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
-    pub websocket_url: String,
+    #[serde(alias = "websocketUrl")]
+    pub connect_api_url: String,
     pub opacity: f64,
     pub font_size: u8,
     pub panel_collapsed: bool,
@@ -28,7 +29,8 @@ pub struct AppConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigPatch {
-    pub websocket_url: Option<String>,
+    #[serde(alias = "websocketUrl")]
+    pub connect_api_url: Option<String>,
     pub opacity: Option<f64>,
     pub font_size: Option<u8>,
     pub panel_collapsed: Option<bool>,
@@ -37,7 +39,7 @@ pub struct ConfigPatch {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            websocket_url: "ws://127.0.0.1:17878".to_string(),
+            connect_api_url: default_connect_api_url(),
             opacity: 0.82,
             font_size: 14,
             panel_collapsed: false,
@@ -77,8 +79,10 @@ pub fn save_window_size(
 
 impl AppConfig {
     pub fn apply_patch(&mut self, patch: ConfigPatch) {
-        if let Some(value) = patch.websocket_url {
-            self.websocket_url = value;
+        if let Some(value) = patch.connect_api_url {
+            if is_http_connect_api_url(&value) {
+                self.connect_api_url = value;
+            }
         }
         if let Some(value) = patch.opacity {
             self.opacity = value.clamp(0.45, 0.98);
@@ -92,6 +96,10 @@ impl AppConfig {
     }
 
     pub fn sanitize_window_geometry(&mut self) {
+        if !is_http_connect_api_url(&self.connect_api_url) {
+            self.connect_api_url = default_connect_api_url();
+        }
+
         if let (Some(x), Some(y)) = (self.window_x, self.window_y) {
             if !should_persist_window_position(x, y) {
                 self.window_x = None;
@@ -149,6 +157,14 @@ fn should_persist_window_size_for_panel(width: u32, height: u32, panel_collapsed
     width >= DEFAULT_WINDOW_WIDTH && height >= MIN_WINDOW_HEIGHT
 }
 
+fn default_connect_api_url() -> String {
+    "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect".to_string()
+}
+
+fn is_http_connect_api_url(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -188,18 +204,58 @@ mod tests {
         };
 
         config.apply_patch(ConfigPatch {
-            websocket_url: Some("ws://example.test".to_string()),
+            connect_api_url: Some(
+                "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect?token=abc".to_string(),
+            ),
             opacity: Some(2.0),
             font_size: Some(3),
             panel_collapsed: Some(false),
         });
 
-        assert_eq!(config.websocket_url, "ws://example.test");
+        assert_eq!(
+            config.connect_api_url,
+            "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect?token=abc"
+        );
         assert_eq!(config.opacity, 0.98);
         assert_eq!(config.font_size, 12);
         assert_eq!(config.window_x, Some(11));
         assert_eq!(config.window_height, Some(444));
         assert!(!config.panel_collapsed);
+    }
+
+    #[test]
+    fn rejects_non_http_connect_api_url_patches() {
+        let mut config = AppConfig {
+            connect_api_url: "https://example.test/connect".to_string(),
+            ..AppConfig::default()
+        };
+
+        config.apply_patch(ConfigPatch {
+            connect_api_url: Some("ws://127.0.0.1:17878".to_string()),
+            opacity: None,
+            font_size: None,
+            panel_collapsed: None,
+        });
+
+        assert_eq!(config.connect_api_url, "https://example.test/connect");
+    }
+
+    #[test]
+    fn migrates_legacy_websocket_url_to_connect_api_url_when_loading_json() {
+        let config: AppConfig = serde_json::from_str(
+            r#"{
+                "websocketUrl": "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect?token=abc",
+                "opacity": 0.82,
+                "fontSize": 14,
+                "panelCollapsed": false
+            }"#,
+        )
+        .expect("legacy config should deserialize");
+
+        assert_eq!(
+            config.connect_api_url,
+            "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect?token=abc"
+        );
     }
 
     #[test]
