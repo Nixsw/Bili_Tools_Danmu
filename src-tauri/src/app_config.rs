@@ -18,6 +18,7 @@ pub struct AppConfig {
     pub opacity: f64,
     pub font_size: u8,
     pub panel_collapsed: bool,
+    pub person_history_count: u8,
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
     pub window_width: Option<u32>,
@@ -34,6 +35,7 @@ pub struct ConfigPatch {
     pub opacity: Option<f64>,
     pub font_size: Option<u8>,
     pub panel_collapsed: Option<bool>,
+    pub person_history_count: Option<u8>,
 }
 
 impl Default for AppConfig {
@@ -43,6 +45,7 @@ impl Default for AppConfig {
             opacity: 0.82,
             font_size: 14,
             panel_collapsed: false,
+            person_history_count: 1,
             window_x: None,
             window_y: None,
             window_width: None,
@@ -92,6 +95,9 @@ impl AppConfig {
         }
         if let Some(value) = patch.panel_collapsed {
             self.panel_collapsed = value;
+        }
+        if let Some(value) = patch.person_history_count {
+            self.person_history_count = value.min(3);
         }
     }
 
@@ -179,6 +185,13 @@ mod tests {
     }
 
     #[test]
+    fn defaults_to_one_person_history_message() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.person_history_count, 1);
+    }
+
+    #[test]
     fn discards_narrow_saved_width_when_person_panel_is_visible() {
         let mut config = AppConfig {
             panel_collapsed: false,
@@ -210,6 +223,7 @@ mod tests {
             opacity: Some(2.0),
             font_size: Some(3),
             panel_collapsed: Some(false),
+            person_history_count: Some(9),
         });
 
         assert_eq!(
@@ -221,6 +235,7 @@ mod tests {
         assert_eq!(config.window_x, Some(11));
         assert_eq!(config.window_height, Some(444));
         assert!(!config.panel_collapsed);
+        assert_eq!(config.person_history_count, 3);
     }
 
     #[test]
@@ -235,6 +250,7 @@ mod tests {
             opacity: None,
             font_size: None,
             panel_collapsed: None,
+            person_history_count: None,
         });
 
         assert_eq!(config.connect_api_url, "https://example.test/connect");
@@ -256,6 +272,7 @@ mod tests {
             config.connect_api_url,
             "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect?token=abc"
         );
+        assert_eq!(config.person_history_count, 1);
     }
 
     #[test]

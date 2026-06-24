@@ -13,6 +13,7 @@ interface MessageStoreOptions {
   perUserCapacity?: number;
   mainViewportSize: number;
   personViewportSize: number;
+  personHistoryCount?: number;
 }
 
 interface ViewportSizePatch {
@@ -121,6 +122,9 @@ export function createMessageStore(options: MessageStoreOptions) {
   let personManualViewport = false;
   let mainViewportSize = options.mainViewportSize;
   let personViewportSize = options.personViewportSize;
+  let personHistoryCount = clampPersonHistoryCount(
+    options.personHistoryCount ?? 1
+  );
   let hoverFrozen = false;
   let connected = false;
   let connectionStatus = "未连接";
@@ -218,6 +222,17 @@ export function createMessageStore(options: MessageStoreOptions) {
       );
     },
 
+    jumpMainViewportToUnread() {
+      const maxStart = maxViewportStart(messages.length, mainViewportSize);
+      const firstUnreadIndex = messages.findIndex(
+        (message, index) => index >= mainStartIndex && !message.read
+      );
+      mainStartIndex = Math.min(
+        firstUnreadIndex >= 0 ? firstUnreadIndex : maxStart,
+        maxStart
+      );
+    },
+
     scrollPersonViewport(delta: number) {
       const userIds = getSelectedUserIds();
       if (userIds.length === 0) {
@@ -230,6 +245,13 @@ export function createMessageStore(options: MessageStoreOptions) {
         userIds.length,
         personViewportSize
       );
+    },
+
+    setPersonHistoryCount(value: number) {
+      personHistoryCount = clampPersonHistoryCount(value);
+      if (!personManualViewport) {
+        personStartIndex = computeAnchoredPersonStart();
+      }
     },
 
     setViewportSizes(patch: ViewportSizePatch) {
@@ -297,6 +319,7 @@ export function createMessageStore(options: MessageStoreOptions) {
         connected,
         connectionStatus,
         mainVisible: api.getMainVisible(),
+        mainHiddenNewerCount: getMainHiddenNewerCount(),
         personPanel: api.getPersonPanel()
       };
     }
@@ -404,6 +427,10 @@ export function createMessageStore(options: MessageStoreOptions) {
     );
   }
 
+  function getMainHiddenNewerCount() {
+    return Math.max(0, messages.length - (mainStartIndex + mainViewportSize));
+  }
+
   function getSelectedUserIds() {
     return selectedUid ? (idsByUid.get(selectedUid) ?? []) : [];
   }
@@ -436,19 +463,8 @@ export function createMessageStore(options: MessageStoreOptions) {
     }
 
     const latestStart = Math.max(0, userIds.length - personViewportSize);
-    if (personViewportSize <= 1) {
-      return Math.min(anchorIndex, latestStart);
-    }
-
-    if (anchorIndex === 0) {
-      return 0;
-    }
-
-    if (anchorIndex > latestStart) {
-      return latestStart;
-    }
-
-    return anchorIndex - 1;
+    const historyCount = Math.min(personHistoryCount, personViewportSize - 1);
+    return Math.min(latestStart, Math.max(0, anchorIndex - historyCount));
   }
 
   function scrollViewportStart(
@@ -476,6 +492,10 @@ export function createMessageStore(options: MessageStoreOptions) {
 
   function clampViewportSize(value: number) {
     return Math.min(100, Math.max(1, Math.trunc(value)));
+  }
+
+  function clampPersonHistoryCount(value: number) {
+    return Math.min(3, Math.max(0, Math.trunc(value)));
   }
 
   return api;

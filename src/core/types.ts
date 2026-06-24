@@ -59,5 +59,6 @@ export interface AppSnapshot {
   connected: boolean;
   connectionStatus: string;
   mainVisible: DanmuMessage[];
+  mainHiddenNewerCount: number;
   personPanel: PersonPanelSnapshot;
 }
