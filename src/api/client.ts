@@ -9,6 +9,7 @@ export interface DisplayConfig {
   opacity: number;
   fontSize: number;
   panelCollapsed: boolean;
+  personHistoryCount: number;
 }
 
 export interface ProbeReport {
@@ -39,6 +40,7 @@ export interface DanmuClient {
   selectUserAnchor(messageId: number): Promise<void>;
   setPersonPanelHover(value: boolean): Promise<void>;
   scrollMainViewport(delta: number): Promise<void>;
+  jumpMainViewportToUnread(): Promise<void>;
   scrollPersonViewport(delta: number): Promise<void>;
   setViewportSizes(sizes: {
     mainViewportSize?: number;
@@ -56,7 +58,8 @@ const defaultConfig: DisplayConfig = {
   connectApiUrl: "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect",
   opacity: 0.82,
   fontSize: 14,
-  panelCollapsed: false
+  panelCollapsed: false,
+  personHistoryCount: 1
 };
 const BROWSER_MOCK_WS_URL = "ws://127.0.0.1:17878";
 
@@ -108,6 +111,8 @@ function createTauriClient(): DanmuClient {
       invoke<void>("set_person_panel_hover", { value }),
     scrollMainViewport: (delta) =>
       invoke<void>("scroll_main_viewport", { delta }),
+    jumpMainViewportToUnread: () =>
+      invoke<void>("jump_main_viewport_to_unread"),
     scrollPersonViewport: (delta) =>
       invoke<void>("scroll_person_viewport", { delta }),
     setViewportSizes: (sizes) => invoke<void>("set_viewport_sizes", sizes),
@@ -117,7 +122,11 @@ function createTauriClient(): DanmuClient {
 }
 
 function createBrowserFallbackClient(): DanmuClient {
-  const store = createMessageStore({ mainViewportSize: 22, personViewportSize: 14 });
+  const store = createMessageStore({
+    mainViewportSize: 22,
+    personViewportSize: 14,
+    personHistoryCount: defaultConfig.personHistoryCount
+  });
   let config = { ...defaultConfig };
   let socket: WebSocket | null = null;
   let onChange: (snapshot: AppSnapshot) => void = () => undefined;
@@ -139,6 +148,13 @@ function createBrowserFallbackClient(): DanmuClient {
     },
     async updateConfig(patch) {
       config = { ...config, ...patch };
+      if (typeof patch.personHistoryCount === "number") {
+        config.personHistoryCount = clampPersonHistoryCount(
+          patch.personHistoryCount
+        );
+        store.setPersonHistoryCount(config.personHistoryCount);
+        emit();
+      }
       return config;
     },
     async probeBilibiliConnection() {
@@ -214,6 +230,10 @@ function createBrowserFallbackClient(): DanmuClient {
       store.scrollMainViewport(delta);
       emit();
     },
+    async jumpMainViewportToUnread() {
+      store.jumpMainViewportToUnread();
+      emit();
+    },
     async scrollPersonViewport(delta) {
       store.scrollPersonViewport(delta);
       emit();
@@ -261,4 +281,8 @@ function createBrowserFallbackClient(): DanmuClient {
   }
 
   return client;
+}
+
+function clampPersonHistoryCount(value: number) {
+  return Math.min(3, Math.max(0, Math.trunc(value)));
 }

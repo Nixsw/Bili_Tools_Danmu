@@ -236,6 +236,101 @@ describe("main message viewport", () => {
     ]);
   });
 
+  it("counts hidden newer main messages as the viewport moves", () => {
+    const store = createMessageStore({ mainViewportSize: 5, personViewportSize: 5 });
+    "ABCDEFG".split("").forEach((content, index) => {
+      store.ingest(baseRaw({ content, uid: 1, timestampMs: 1_000 + index }));
+    });
+
+    expect(store.getSnapshot().mainHiddenNewerCount).toBe(2);
+
+    store.scrollMainViewport(1);
+    expect(store.getSnapshot().mainHiddenNewerCount).toBe(1);
+
+    store.scrollMainViewport(99);
+    expect(store.getSnapshot().mainHiddenNewerCount).toBe(0);
+  });
+
+  it("jumps the main viewport to the first unread message from the current top", () => {
+    const store = createMessageStore({ mainViewportSize: 5, personViewportSize: 5 });
+    "ABCDEFGHIJ".split("").forEach((content, index) => {
+      store.ingest(baseRaw({ content, uid: 1, timestampMs: 1_000 + index }));
+    });
+
+    store.ackMessage(1);
+    store.ackMessage(2);
+    store.ackMessage(3);
+    store.scrollMainViewport(-1);
+    expect(store.getMainVisible().map((msg) => `${msg.content}:${msg.read}`)).toEqual([
+      "C:true",
+      "D:false",
+      "E:false",
+      "F:false",
+      "G:false"
+    ]);
+
+    store.jumpMainViewportToUnread();
+
+    expect(store.getMainVisible().map((msg) => msg.content)).toEqual([
+      "D",
+      "E",
+      "F",
+      "G",
+      "H"
+    ]);
+  });
+
+  it("keeps the main viewport full when jumping to an unread message near the end", () => {
+    const store = createMessageStore({ mainViewportSize: 5, personViewportSize: 5 });
+    "ABCDEFGHIJ".split("").forEach((content, index) => {
+      store.ingest(baseRaw({ content, uid: 1, timestampMs: 1_000 + index }));
+    });
+
+    for (let messageId = 1; messageId <= 7; messageId += 1) {
+      store.ackMessage(messageId);
+    }
+    store.scrollMainViewport(-3);
+    expect(store.getMainVisible().map((msg) => `${msg.content}:${msg.read}`)).toEqual([
+      "C:true",
+      "D:true",
+      "E:true",
+      "F:true",
+      "G:true"
+    ]);
+
+    store.jumpMainViewportToUnread();
+
+    expect(store.getMainVisible().map((msg) => msg.content)).toEqual([
+      "F",
+      "G",
+      "H",
+      "I",
+      "J"
+    ]);
+  });
+
+  it("jumps the main viewport to the newest page when no unread message remains", () => {
+    const store = createMessageStore({ mainViewportSize: 5, personViewportSize: 5 });
+    "ABCDEFGH".split("").forEach((content, index) => {
+      store.ingest(baseRaw({ content, uid: 1, timestampMs: 1_000 + index }));
+    });
+
+    for (let messageId = 1; messageId <= 8; messageId += 1) {
+      store.ackMessage(messageId);
+    }
+    store.scrollMainViewport(-2);
+
+    store.jumpMainViewportToUnread();
+
+    expect(store.getMainVisible().map((msg) => msg.content)).toEqual([
+      "D",
+      "E",
+      "F",
+      "G",
+      "H"
+    ]);
+  });
+
   it("keeps the bottom pinned when a new message arrives while already at the bottom", () => {
     const store = createMessageStore({ mainViewportSize: 5, personViewportSize: 5 });
     "ABCDEFG".split("").forEach((content, index) => {
@@ -323,6 +418,96 @@ describe("person panel anchored viewport", () => {
       "M6"
     ]);
     expect(panel.hiddenNewerCount).toBe(2);
+  });
+
+  it("allows the anchor on the first row when person history count is zero", () => {
+    const store = createMessageStore({ mainViewportSize: 8, personViewportSize: 5 });
+    for (let i = 1; i <= 8; i += 1) {
+      store.ingest(baseRaw({ content: `M${i}`, uid: 42, timestampMs: i }));
+    }
+
+    store.setPersonHistoryCount(0);
+    store.selectUserAnchor(3);
+
+    const panel = store.getPersonPanel();
+    expect(panel.visibleMessages.map((msg) => msg.content)).toEqual([
+      "M3",
+      "M4",
+      "M5",
+      "M6",
+      "M7"
+    ]);
+    expect(panel.visibleMessages.findIndex((msg) => msg.messageId === panel.anchorMessageId)).toBe(0);
+    expect(panel.hiddenNewerCount).toBe(1);
+  });
+
+  it("shows three person history messages above the anchor when configured", () => {
+    const store = createMessageStore({ mainViewportSize: 8, personViewportSize: 5 });
+    for (let i = 1; i <= 8; i += 1) {
+      store.ingest(baseRaw({ content: `M${i}`, uid: 42, timestampMs: i }));
+    }
+
+    store.setPersonHistoryCount(3);
+    store.selectUserAnchor(5);
+
+    const panel = store.getPersonPanel();
+    expect(panel.visibleMessages.map((msg) => msg.content)).toEqual([
+      "M2",
+      "M3",
+      "M4",
+      "M5",
+      "M6"
+    ]);
+    expect(panel.visibleMessages.findIndex((msg) => msg.messageId === panel.anchorMessageId)).toBe(3);
+    expect(panel.hiddenNewerCount).toBe(2);
+  });
+
+  it("keeps the selected person viewport full near the bottom when history count is high", () => {
+    const store = createMessageStore({ mainViewportSize: 8, personViewportSize: 5 });
+    for (let i = 1; i <= 7; i += 1) {
+      store.ingest(baseRaw({ content: `M${i}`, uid: 42, timestampMs: i }));
+    }
+
+    store.setPersonHistoryCount(3);
+    store.selectUserAnchor(7);
+
+    const panel = store.getPersonPanel();
+    expect(panel.visibleMessages.map((msg) => msg.content)).toEqual([
+      "M3",
+      "M4",
+      "M5",
+      "M6",
+      "M7"
+    ]);
+    expect(panel.visibleMessages.findIndex((msg) => msg.messageId === panel.anchorMessageId)).toBe(4);
+    expect(panel.hiddenNewerCount).toBe(0);
+  });
+
+  it("does not override a manually scrolled selected person viewport when history count changes", () => {
+    const store = createMessageStore({ mainViewportSize: 8, personViewportSize: 5 });
+    for (let i = 1; i <= 8; i += 1) {
+      store.ingest(baseRaw({ content: `M${i}`, uid: 42, timestampMs: i }));
+    }
+
+    store.selectUserAnchor(5);
+    store.scrollPersonViewport(-1);
+    expect(store.getPersonPanel().visibleMessages.map((msg) => msg.content)).toEqual([
+      "M3",
+      "M4",
+      "M5",
+      "M6",
+      "M7"
+    ]);
+
+    store.setPersonHistoryCount(3);
+
+    expect(store.getPersonPanel().visibleMessages.map((msg) => msg.content)).toEqual([
+      "M3",
+      "M4",
+      "M5",
+      "M6",
+      "M7"
+    ]);
   });
 
   it("keeps the anchor on the second row instead of bouncing through the first row", () => {

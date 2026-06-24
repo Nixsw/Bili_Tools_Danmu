@@ -28,6 +28,10 @@ pub fn update_config(
     let config = {
         let mut inner = state.inner.lock().map_err(|error| error.to_string())?;
         inner.config.apply_patch(patch);
+        let person_history_count = inner.config.person_history_count;
+        inner
+            .store
+            .set_person_history_count(person_history_count as usize);
         save_config(&inner.config)?;
         inner.config.clone()
     };
@@ -139,6 +143,18 @@ pub fn scroll_main_viewport(
     {
         let mut inner = state.inner.lock().map_err(|error| error.to_string())?;
         inner.store.scroll_main_viewport(delta as isize);
+    }
+    emit_snapshot(&app, &state)
+}
+
+#[tauri::command]
+pub fn jump_main_viewport_to_unread(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let mut inner = state.inner.lock().map_err(|error| error.to_string())?;
+        inner.store.jump_main_viewport_to_unread();
     }
     emit_snapshot(&app, &state)
 }

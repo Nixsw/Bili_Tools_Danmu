@@ -8,9 +8,9 @@ mod ws_client;
 use app_config::{load_config, save_window_position, save_window_size};
 use commands::{
     ack_message, ack_user_messages, connect_ws, disconnect_ws, get_config, get_snapshot,
-    probe_bilibili_connection, reconnect_ws, scroll_main_viewport, scroll_person_viewport,
-    select_user_anchor, set_main_window_geometry, set_person_panel_hover, set_viewport_sizes,
-    update_config,
+    jump_main_viewport_to_unread, probe_bilibili_connection, reconnect_ws, scroll_main_viewport,
+    scroll_person_viewport, select_user_anchor, set_main_window_geometry, set_person_panel_hover,
+    set_viewport_sizes, update_config,
 };
 use std::sync::{Arc, Mutex};
 use store::MessageStore;
@@ -36,10 +36,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let config = load_config();
-            let runtime_state = Arc::new(Mutex::new(RuntimeState {
-                store: MessageStore::new(config.main_capacity, config.per_user_capacity),
-                config,
-            }));
+            let mut store = MessageStore::new(config.main_capacity, config.per_user_capacity);
+            store.set_person_history_count(config.person_history_count as usize);
+            let runtime_state = Arc::new(Mutex::new(RuntimeState { store, config }));
             let state = AppState {
                 inner: runtime_state.clone(),
                 ws_task: Arc::new(Mutex::new(None)),
@@ -65,6 +64,7 @@ pub fn run() {
             select_user_anchor,
             set_person_panel_hover,
             scroll_main_viewport,
+            jump_main_viewport_to_unread,
             scroll_person_viewport,
             set_viewport_sizes,
             set_main_window_geometry
@@ -140,13 +140,41 @@ fn persist_main_window_geometry(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct TrayMenuItemSpec {
+    id: &'static str,
+    label: &'static str,
+}
+
+fn tray_menu_item_specs() -> [TrayMenuItemSpec; 3] {
+    [
+        TrayMenuItemSpec {
+            id: "show",
+            label: "显示/隐藏",
+        },
+        TrayMenuItemSpec {
+            id: "settings",
+            label: "设置",
+        },
+        TrayMenuItemSpec {
+            id: "quit",
+            label: "退出",
+        },
+    ]
+}
+
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "显示/隐藏", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
-    let disconnect = MenuItem::with_id(app, "disconnect", "断开", true, None::<&str>)?;
-    let reconnect = MenuItem::with_id(app, "reconnect", "重连", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &settings, &disconnect, &reconnect, &quit])?;
+    let [show_spec, settings_spec, quit_spec] = tray_menu_item_specs();
+    let show = MenuItem::with_id(app, show_spec.id, show_spec.label, true, None::<&str>)?;
+    let settings = MenuItem::with_id(
+        app,
+        settings_spec.id,
+        settings_spec.label,
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, quit_spec.id, quit_spec.label, true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
 
     TrayIconBuilder::new()
         .menu(&menu)
@@ -162,16 +190,6 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                     }
                 }
             }
-            "reconnect" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.emit("tray_reconnect_requested", ());
-                }
-            }
-            "disconnect" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.emit("tray_disconnect_requested", ());
-                }
-            }
             "settings" => {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
@@ -185,4 +203,18 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .build(app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_menu_excludes_disconnect_and_reconnect_actions() {
+        let ids: Vec<&str> = tray_menu_item_specs().iter().map(|item| item.id).collect();
+
+        assert_eq!(ids, vec!["show", "settings", "quit"]);
+        assert!(!ids.contains(&"disconnect"));
+        assert!(!ids.contains(&"reconnect"));
+    }
 }

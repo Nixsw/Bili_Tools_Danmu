@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   ChevronsLeft,
   ChevronsRight,
+  LocateFixed,
   Minus,
   Settings
 } from "lucide-react";
@@ -30,6 +31,7 @@ import {
   getPanelTransitionClassName
 } from "./ui/panelTransition";
 import {
+  getMainUnreadAnchorAction,
   getPersonPanelToggleIcon,
   getWindowDismissAction
 } from "./ui/windowActions";
@@ -54,6 +56,7 @@ const initialSnapshot: AppSnapshot = {
   connected: false,
   connectionStatus: "启动中",
   mainVisible: [],
+  mainHiddenNewerCount: 0,
   personPanel: {
     selectedUid: null,
     selectedNickname: null,
@@ -78,7 +81,8 @@ export default function App() {
     connectApiUrl: "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect",
     opacity: 0.82,
     fontSize: 14,
-    panelCollapsed: false
+    panelCollapsed: false,
+    personHistoryCount: 1
   });
   const [connectApiUrlDraft, setConnectApiUrlDraft] = useState(
     "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect"
@@ -406,6 +410,7 @@ export default function App() {
     connectedToastDeadlineMs,
     statusNowMs
   );
+  const mainUnreadAnchorAction = getMainUnreadAnchorAction();
   const personPanelToggleIcon = getPersonPanelToggleIcon(personVisible);
   const windowDismissAction = getWindowDismissAction();
 
@@ -537,6 +542,11 @@ export default function App() {
     }
   };
 
+  const onMainNewerTipClick = () => {
+    setMessageContextMenu(null);
+    void client.jumpMainViewportToUnread();
+  };
+
   const onPersonWheel = (event: React.WheelEvent<HTMLElement>) => {
     const delta = wheelToViewportDelta(event);
     if (delta !== 0) {
@@ -632,6 +642,14 @@ export default function App() {
 
         <div className="window-actions">
           <button
+            className={mainUnreadAnchorAction.className}
+            title={mainUnreadAnchorAction.title}
+            aria-label={mainUnreadAnchorAction.title}
+            onClick={onMainNewerTipClick}
+          >
+            <LocateFixed size={15} />
+          </button>
+          <button
             className="icon-button"
             title={personVisible ? "收起指定人记录" : "展开指定人记录"}
             onClick={() =>
@@ -702,6 +720,19 @@ export default function App() {
               value={config.fontSize}
               onChange={(event) =>
                 updateConfig({ fontSize: Number(event.target.value) })
+              }
+            />
+          </label>
+          <label>
+            <span>左侧历史条数 {config.personHistoryCount}</span>
+            <input
+              type="range"
+              min="0"
+              max="3"
+              step="1"
+              value={config.personHistoryCount}
+              onChange={(event) =>
+                updateConfig({ personHistoryCount: Number(event.target.value) })
               }
             />
           </label>
@@ -818,6 +849,15 @@ export default function App() {
               </button>
             ))}
           </div>
+          {snapshot.mainHiddenNewerCount > 0 && (
+            <button
+              type="button"
+              className="newer-tip main-newer-tip"
+              onClick={onMainNewerTipClick}
+            >
+              还有 {snapshot.mainHiddenNewerCount} 条更新
+            </button>
+          )}
         </section>
       </section>
 

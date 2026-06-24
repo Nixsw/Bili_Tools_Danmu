@@ -9,6 +9,7 @@ pub struct MessageStore {
     per_user_capacity: usize,
     main_viewport_size: usize,
     person_viewport_size: usize,
+    person_history_count: usize,
     main_start_index: usize,
     selected_uid: Option<String>,
     anchor_message_id: Option<u64>,
@@ -30,6 +31,7 @@ impl MessageStore {
             per_user_capacity,
             main_viewport_size: 22,
             person_viewport_size: 14,
+            person_history_count: 1,
             main_start_index: 0,
             selected_uid: None,
             anchor_message_id: None,
@@ -141,6 +143,18 @@ impl MessageStore {
         );
     }
 
+    pub fn jump_main_viewport_to_unread(&mut self) {
+        let max_start = max_viewport_start(self.messages.len(), self.main_viewport_size);
+        let first_unread_index = self
+            .messages
+            .iter()
+            .enumerate()
+            .skip(self.main_start_index)
+            .find_map(|(index, message)| (!message.read).then_some(index));
+
+        self.main_start_index = first_unread_index.unwrap_or(max_start).min(max_start);
+    }
+
     pub fn scroll_person_viewport(&mut self, delta: isize) {
         let user_count = self.selected_user_ids().len();
         if user_count == 0 {
@@ -153,6 +167,13 @@ impl MessageStore {
             user_count,
             self.person_viewport_size,
         );
+    }
+
+    pub fn set_person_history_count(&mut self, value: usize) {
+        self.person_history_count = value.min(3);
+        if !self.person_manual_viewport {
+            self.person_start_index = self.compute_anchored_person_start();
+        }
     }
 
     pub fn set_viewport_sizes(
@@ -194,6 +215,7 @@ impl MessageStore {
             connected: self.connected,
             connection_status: self.connection_status.clone(),
             main_visible: self.main_visible(),
+            main_hidden_newer_count: self.main_hidden_newer_count(),
             person_panel: self.person_panel(),
         }
     }
@@ -317,6 +339,12 @@ impl MessageStore {
         );
     }
 
+    fn main_hidden_newer_count(&self) -> usize {
+        self.messages
+            .len()
+            .saturating_sub(self.main_start_index + self.main_viewport_size)
+    }
+
     fn selected_user_ids(&self) -> Vec<u64> {
         self.selected_uid
             .as_ref()
@@ -349,19 +377,10 @@ impl MessageStore {
         };
 
         let latest_start = user_ids.len().saturating_sub(self.person_viewport_size);
-        if self.person_viewport_size <= 1 {
-            return anchor_index.min(latest_start);
-        }
-
-        if anchor_index == 0 {
-            return 0;
-        }
-
-        if anchor_index > latest_start {
-            return latest_start;
-        }
-
-        anchor_index.saturating_sub(1)
+        let history_count = self
+            .person_history_count
+            .min(self.person_viewport_size.saturating_sub(1));
+        anchor_index.saturating_sub(history_count).min(latest_start)
     }
 }
 
@@ -507,6 +526,95 @@ mod tests {
     }
 
     #[test]
+    fn main_viewport_counts_hidden_newer_messages_as_it_moves() {
+        let mut store = MessageStore::new(1000, 50);
+        store.main_viewport_size = 5;
+        for content in ["A", "B", "C", "D", "E", "F", "G"] {
+            store.ingest(raw(content, 1, 1)).unwrap();
+        }
+
+        assert_eq!(store.snapshot().main_hidden_newer_count, 2);
+
+        store.scroll_main_viewport(1);
+        assert_eq!(store.snapshot().main_hidden_newer_count, 1);
+
+        store.scroll_main_viewport(99);
+        assert_eq!(store.snapshot().main_hidden_newer_count, 0);
+    }
+
+    #[test]
+    fn main_viewport_jumps_to_first_unread_message_from_current_top() {
+        let mut store = MessageStore::new(1000, 50);
+        store.main_viewport_size = 5;
+        for content in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"] {
+            store.ingest(raw(content, 1, 1)).unwrap();
+        }
+
+        store.ack_message(1);
+        store.ack_message(2);
+        store.ack_message(3);
+        store.scroll_main_viewport(-1);
+        assert_eq!(
+            store
+                .snapshot()
+                .main_visible
+                .iter()
+                .map(|message| format!("{}:{}", message.content, message.read))
+                .collect::<Vec<_>>(),
+            ["C:true", "D:false", "E:false", "F:false", "G:false"]
+        );
+
+        store.jump_main_viewport_to_unread();
+
+        assert_eq!(main_contents(&store), ["D", "E", "F", "G", "H"]);
+    }
+
+    #[test]
+    fn main_viewport_stays_full_when_jumping_to_unread_near_the_end() {
+        let mut store = MessageStore::new(1000, 50);
+        store.main_viewport_size = 5;
+        for content in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"] {
+            store.ingest(raw(content, 1, 1)).unwrap();
+        }
+
+        for message_id in 1..=7 {
+            store.ack_message(message_id);
+        }
+        store.scroll_main_viewport(-3);
+        assert_eq!(
+            store
+                .snapshot()
+                .main_visible
+                .iter()
+                .map(|message| format!("{}:{}", message.content, message.read))
+                .collect::<Vec<_>>(),
+            ["C:true", "D:true", "E:true", "F:true", "G:true"]
+        );
+
+        store.jump_main_viewport_to_unread();
+
+        assert_eq!(main_contents(&store), ["F", "G", "H", "I", "J"]);
+    }
+
+    #[test]
+    fn main_viewport_jumps_to_newest_page_when_no_unread_remains() {
+        let mut store = MessageStore::new(1000, 50);
+        store.main_viewport_size = 5;
+        for content in ["A", "B", "C", "D", "E", "F", "G", "H"] {
+            store.ingest(raw(content, 1, 1)).unwrap();
+        }
+
+        for message_id in 1..=8 {
+            store.ack_message(message_id);
+        }
+        store.scroll_main_viewport(-2);
+
+        store.jump_main_viewport_to_unread();
+
+        assert_eq!(main_contents(&store), ["D", "E", "F", "G", "H"]);
+    }
+
+    #[test]
     fn main_viewport_keeps_bottom_pinned_when_new_message_arrives_at_bottom() {
         let mut store = MessageStore::new(1000, 50);
         store.main_viewport_size = 5;
@@ -553,6 +661,89 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(visible, ["M2", "M3", "M4", "M5", "M6"]);
         assert_eq!(panel.hidden_newer_count, 2);
+    }
+
+    #[test]
+    fn person_anchor_can_start_on_first_row_when_history_count_is_zero() {
+        let mut store = MessageStore::new(1000, 50);
+        store.person_viewport_size = 5;
+        for i in 1..=8 {
+            store.ingest(raw(&format!("M{i}"), 42, i)).unwrap();
+        }
+
+        store.set_person_history_count(0);
+        store.select_user_anchor(3);
+
+        let panel = store.snapshot().person_panel;
+        let anchor_row = panel
+            .visible_messages
+            .iter()
+            .position(|message| Some(message.message_id) == panel.anchor_message_id);
+
+        assert_eq!(person_contents(&store), ["M3", "M4", "M5", "M6", "M7"]);
+        assert_eq!(anchor_row, Some(0));
+        assert_eq!(panel.hidden_newer_count, 1);
+    }
+
+    #[test]
+    fn person_anchor_shows_three_history_messages_when_configured() {
+        let mut store = MessageStore::new(1000, 50);
+        store.person_viewport_size = 5;
+        for i in 1..=8 {
+            store.ingest(raw(&format!("M{i}"), 42, i)).unwrap();
+        }
+
+        store.set_person_history_count(3);
+        store.select_user_anchor(5);
+
+        let panel = store.snapshot().person_panel;
+        let anchor_row = panel
+            .visible_messages
+            .iter()
+            .position(|message| Some(message.message_id) == panel.anchor_message_id);
+
+        assert_eq!(person_contents(&store), ["M2", "M3", "M4", "M5", "M6"]);
+        assert_eq!(anchor_row, Some(3));
+        assert_eq!(panel.hidden_newer_count, 2);
+    }
+
+    #[test]
+    fn person_anchor_keeps_viewport_full_near_bottom_when_history_count_is_high() {
+        let mut store = MessageStore::new(1000, 50);
+        store.person_viewport_size = 5;
+        for i in 1..=7 {
+            store.ingest(raw(&format!("M{i}"), 42, i)).unwrap();
+        }
+
+        store.set_person_history_count(3);
+        store.select_user_anchor(7);
+
+        let panel = store.snapshot().person_panel;
+        let anchor_row = panel
+            .visible_messages
+            .iter()
+            .position(|message| Some(message.message_id) == panel.anchor_message_id);
+
+        assert_eq!(person_contents(&store), ["M3", "M4", "M5", "M6", "M7"]);
+        assert_eq!(anchor_row, Some(4));
+        assert_eq!(panel.hidden_newer_count, 0);
+    }
+
+    #[test]
+    fn person_history_count_change_does_not_override_manual_person_viewport() {
+        let mut store = MessageStore::new(1000, 50);
+        store.person_viewport_size = 5;
+        for i in 1..=8 {
+            store.ingest(raw(&format!("M{i}"), 42, i)).unwrap();
+        }
+
+        store.select_user_anchor(5);
+        store.scroll_person_viewport(-1);
+        assert_eq!(person_contents(&store), ["M3", "M4", "M5", "M6", "M7"]);
+
+        store.set_person_history_count(3);
+
+        assert_eq!(person_contents(&store), ["M3", "M4", "M5", "M6", "M7"]);
     }
 
     #[test]
