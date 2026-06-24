@@ -18,6 +18,20 @@ export interface PersonPanelResizePlan {
   height: number;
 }
 
+export interface PersonPanelWindowResizeInput {
+  currentVisible: boolean;
+  nextVisible: boolean;
+  x: number;
+  outerWidth: number;
+  outerHeight: number;
+  innerWidth: number;
+  scaleFactor: number;
+}
+
+export interface PersonPanelWindowResizePlan extends PersonPanelResizePlan {
+  contentWidth: number;
+}
+
 export function getPersonPanelResizePlan({
   currentVisible,
   nextVisible,
@@ -30,15 +44,70 @@ export function getPersonPanelResizePlan({
     return null;
   }
 
-  const panelWidth = Math.round(PERSON_PANEL_WIDTH * scaleFactor);
-  const minWidth = Math.round(MAIN_ONLY_MIN_WIDTH * scaleFactor);
-  const delta = nextVisible
-    ? panelWidth
-    : -Math.min(panelWidth, Math.max(0, width - minWidth));
+  const delta = getPersonPanelResizeDelta({
+    currentVisible,
+    nextVisible,
+    innerWidth: width,
+    scaleFactor
+  });
+
+  if (delta === null) {
+    return null;
+  }
 
   return {
     x: x - delta,
     width: width + delta,
     height
   };
+}
+
+export function getPersonPanelWindowResizePlan({
+  currentVisible,
+  nextVisible,
+  x,
+  outerWidth,
+  outerHeight,
+  innerWidth,
+  scaleFactor
+}: PersonPanelWindowResizeInput): PersonPanelWindowResizePlan | null {
+  const delta = getPersonPanelResizeDelta({
+    currentVisible,
+    nextVisible,
+    innerWidth,
+    scaleFactor
+  });
+
+  if (delta === null) {
+    return null;
+  }
+
+  return {
+    x: x - delta,
+    width: outerWidth + delta,
+    height: outerHeight,
+    contentWidth: Math.round((innerWidth + delta) / scaleFactor)
+  };
+}
+
+function getPersonPanelResizeDelta({
+  currentVisible,
+  nextVisible,
+  innerWidth,
+  scaleFactor
+}: {
+  currentVisible: boolean;
+  nextVisible: boolean;
+  innerWidth: number;
+  scaleFactor: number;
+}) {
+  if (currentVisible === nextVisible) {
+    return null;
+  }
+
+  const panelWidth = Math.round(PERSON_PANEL_WIDTH * scaleFactor);
+  const minWidth = Math.round(MAIN_ONLY_MIN_WIDTH * scaleFactor);
+  return nextVisible
+    ? panelWidth
+    : -Math.min(panelWidth, Math.max(0, innerWidth - minWidth));
 }

@@ -1,4 +1,5 @@
 export type GuardType = 0 | 1 | 2 | 3;
+export type MessageType = "danmu" | "superChat";
 
 export interface FanMedalColors {
   start?: string;
@@ -15,9 +16,19 @@ export interface IncomingDanmuRaw {
   userLevel: number;
   fanLevel: number;
   guardType: GuardType | number;
+  messageType?: MessageType;
+  superChat?: SuperChatInfo;
   fanMedalColors?: FanMedalColors;
   timestampMs?: number;
   timestamp?: number;
+}
+
+export interface SuperChatInfo {
+  id?: string;
+  price?: number;
+  startTimeMs?: number;
+  endTimeMs?: number;
+  durationSec?: number;
 }
 
 export interface DanmuMessage {
@@ -28,6 +39,8 @@ export interface DanmuMessage {
   userLevel: number;
   fanLevel: number;
   guardType: GuardType;
+  messageType: MessageType;
+  superChat?: SuperChatInfo;
   fanMedalColors?: FanMedalColors;
   timestampMs: number;
   read: boolean;

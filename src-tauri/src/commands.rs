@@ -1,8 +1,11 @@
 use crate::app_config::{save_config, AppConfig, ConfigPatch};
+use crate::bilibili::{run_probe_once, ProbeOptions, ProbeReport};
 use crate::models::AppSnapshot;
 use crate::ws_client::{connect_ws_inner, disconnect_ws_inner};
 use crate::AppState;
-use tauri::{AppHandle, Emitter, State};
+use directories::ProjectDirs;
+use std::{fs, path::PathBuf};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
 pub fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
@@ -51,6 +54,28 @@ pub async fn disconnect_ws(app: AppHandle, state: State<'_, AppState>) -> Result
 pub async fn reconnect_ws(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     disconnect_ws_inner(&state)?;
     connect_ws_inner(app, &state).await
+}
+
+#[tauri::command]
+pub async fn probe_bilibili_connection(state: State<'_, AppState>) -> Result<ProbeReport, String> {
+    let connect_api_url = {
+        let inner = state.inner.lock().map_err(|error| error.to_string())?;
+        inner.config.connect_api_url.clone()
+    };
+    let mut report = run_probe_once(
+        &connect_api_url,
+        state.connect_cache.clone(),
+        ProbeOptions::default(),
+    )
+    .await?;
+    let report_path = probe_report_path();
+    report.report_path = Some(report_path.to_string_lossy().to_string());
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+    fs::write(&report_path, text).map_err(|error| error.to_string())?;
+    Ok(report)
 }
 
 #[tauri::command]
@@ -147,6 +172,63 @@ pub fn set_viewport_sizes(
     emit_snapshot(&app, &state)
 }
 
+#[tauri::command]
+pub fn set_main_window_geometry(
+    app: AppHandle,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    set_window_geometry(&window, x, y, width, height)
+}
+
+#[cfg(target_os = "windows")]
+fn set_window_geometry(
+    window: &tauri::WebviewWindow,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
+    };
+
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            width as i32,
+            height as i32,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )
+    }
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_window_geometry(
+    window: &tauri::WebviewWindow,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    window
+        .set_position(tauri::PhysicalPosition::new(x, y))
+        .map_err(|error| error.to_string())?;
+    window
+        .set_size(tauri::PhysicalSize::new(width, height))
+        .map_err(|error| error.to_string())
+}
+
 pub fn emit_snapshot(app: &AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
     let snapshot = {
         let inner = state.inner.lock().map_err(|error| error.to_string())?;
@@ -154,4 +236,10 @@ pub fn emit_snapshot(app: &AppHandle, state: &State<'_, AppState>) -> Result<(),
     };
     app.emit("danmu_state_changed", snapshot)
         .map_err(|error| error.to_string())
+}
+
+fn probe_report_path() -> PathBuf {
+    ProjectDirs::from("com", "DanmuTools", "DanmuTools")
+        .map(|dirs| dirs.config_dir().join("bilibili-probe-report.json"))
+        .unwrap_or_else(|| PathBuf::from("bilibili-probe-report.json"))
 }

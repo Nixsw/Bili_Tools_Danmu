@@ -49,6 +49,26 @@ describe("normalizeIncomingDanmu", () => {
     expect(msg.fanMedalColors).toEqual(fanMedalColors);
   });
 
+  it("normalizes super chat metadata as an independent message type", () => {
+    const msg = normalizeIncomingDanmu(
+      baseRaw({
+        content: "SC来了",
+        messageType: "superChat",
+        superChat: {
+          id: "9001",
+          price: 30,
+          startTimeMs: 1_700_000_000_000,
+          endTimeMs: 1_700_000_060_000,
+          durationSec: 60
+        }
+      }),
+      10
+    );
+
+    expect(msg.messageType).toBe("superChat");
+    expect(msg.superChat?.price).toBe(30);
+  });
+
   it("rejects invalid content length and level ranges", () => {
     expect(() => normalizeIncomingDanmu(baseRaw({ content: "" }), 1)).toThrow(
       "content length"

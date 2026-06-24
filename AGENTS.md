@@ -11,7 +11,7 @@ DanmuTools 是 Windows 10+ x64 桌面弹幕展示小工具，技术栈为 Tauri 
 - 半透明、无边框、置顶桌面窗口。
 - 右侧为主消息流。
 - 左侧为按 UID 锚定的指定人消息记录。
-- Rust 侧负责 WebSocket、缓存、视口推进、锚点规则、配置、托盘和打包。
+- Rust 侧负责 HTTP 连接接口、Bilibili WebSocket、缓存、视口推进、锚点规则、配置、托盘和打包。
 - 前端负责渲染、测量可见行数、提交用户操作和视觉状态。
 
 ## 重要目录
@@ -19,7 +19,7 @@ DanmuTools 是 Windows 10+ x64 桌面弹幕展示小工具，技术栈为 Tauri 
 - `src/`：React 前端。
 - `src/core/`：前端 fallback 消息 store 与核心类型。
 - `src/ui/`：格式化、布局、Bilibili 徽章样式和视口容量工具。
-- `src-tauri/src/`：Tauri/Rust 后端、状态 store、WebSocket、commands、托盘。
+- `src-tauri/src/`：Tauri/Rust 后端、状态 store、Bilibili 协议、WebSocket、commands、托盘。
 - `src-tauri/tauri.conf.json`：Tauri 窗口与打包配置。
 - `src-tauri/capabilities/main.json`：Tauri 前端可调用权限。
 - `scripts/mock-ws.ts`：开发用 mock WebSocket 服务端。
@@ -56,7 +56,7 @@ ws://127.0.0.1:17878
 - 前端视觉或交互改动后，至少跑 `npm run build`；如果影响桌面启动、权限、窗口行为或打包配置，必须跑 `npm run tauri:build`。
 - 打包前如果 `src-tauri/target/release/danmu-tools.exe` 被占用，只关闭本项目路径下的 `danmu-tools.exe` 进程，不要误杀其他工作树或 mock 服务端。
 - 不要自动停止用户正在测试的 mock WebSocket 服务端，除非用户明确要求。
-- 不要随意改真实 JSON 字段路径；接入真实直播协议时，尽量只改解析层。
+- 不要随意改真实 JSON 字段路径；接入真实直播协议时，以 probe 报告和 raw payload 为准，尽量只改解析层。
 - 不要把未请求的搜索、过滤、主题系统、点击穿透、开机自启等功能顺手加入。
 
 ## 关键行为约束
@@ -103,7 +103,7 @@ ws://127.0.0.1:17878
 - 已读指定人消息 hover 不要变成纯白强点燃。
 - Bilibili 风格荣耀等级、粉丝等级、大航海图标、昵称颜色应尽量保持与既有实现一致。
 
-## 当前占位 JSON
+## 当前标准消息 JSON
 
 ```json
 {
@@ -113,6 +113,7 @@ ws://127.0.0.1:17878
   "userLevel": 12,
   "fanLevel": 8,
   "guardType": 0,
+  "messageType": "danmu",
   "timestampMs": 1700000000000
 }
 ```
@@ -124,6 +125,8 @@ ws://127.0.0.1:17878
 - `userLevel` 当前范围 0-100。
 - `fanLevel` 当前按 Bilibili 官方上限支持 0-120。
 - `guardType`：`0=无`，`1=总督`，`2=提督`，`3=舰长`。
+- `messageType`：`danmu=普通弹幕`，`superChat=醒目留言`。
+- `superChat` 可选字段保存 SC 价格、时长和开始/结束时间。
 - `timestampMs` 为毫秒时间戳；如果只有 `timestamp`，按秒时间戳归一化。
 
 ## 验证清单

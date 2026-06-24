@@ -60,12 +60,17 @@ input {
 }
 
 .drag-title {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 7px;
   color: #d8eeec;
   font-size: 12px;
   letter-spacing: 0;
+}
+
+.drag-title > span:first-child {
+  flex: 0 0 auto;
 }
 
 .status-dot {
@@ -81,7 +86,18 @@ input {
   box-shadow: 0 0 10px rgba(71, 223, 181, 0.65);
 }
 
+.connection-status-text {
+  min-width: 0;
+  max-width: min(260px, 45vw);
+  overflow: hidden;
+  color: rgba(188, 198, 200, 0.72);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
 .window-actions {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -140,6 +156,39 @@ input {
   padding: 6px 8px;
 }
 
+.settings-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  color: #aab9b8;
+  font-size: 12px;
+}
+
+.settings-actions button {
+  min-width: 72px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 196, 87, 0.28);
+  border-radius: 6px;
+  color: #ffe3a8;
+  background: rgba(255, 196, 87, 0.1);
+  cursor: pointer;
+  justify-self: end;
+}
+
+.settings-actions button:hover {
+  color: #fff4d8;
+  border-color: rgba(255, 196, 87, 0.5);
+}
+
+.settings-actions span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .content-grid {
   min-height: 0;
   position: relative;
@@ -155,6 +204,14 @@ input {
 .content-grid.is-splitting {
   cursor: col-resize;
   user-select: none;
+  transition: none;
+}
+
+.content-grid.is-panel-geometry-changing {
+  transition: none;
+}
+
+.content-grid.is-panel-geometry-changing .person-panel {
   transition: none;
 }
 
@@ -281,6 +338,14 @@ input {
   box-shadow: inset 2px 0 0 rgba(255, 196, 87, 0.82);
 }
 
+.person-row.is-super-chat {
+  box-shadow: inset 2px 0 0 rgba(255, 196, 87, 0.72);
+}
+
+.person-row.is-super-chat.is-anchor {
+  border-color: rgba(255, 196, 87, 0.5);
+}
+
 .person-row.is-read {
   opacity: 1;
 }
@@ -404,6 +469,10 @@ input {
 
 .message-card:hover {
   color: #ffffff;
+}
+
+.message-card.is-super-chat {
+  border-left-color: rgba(255, 196, 87, 0.5);
 }
 
 .meta-line {
@@ -584,6 +653,30 @@ input {
   color: rgba(191, 199, 202, 0.62);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.sc-badge {
+  flex: 0 0 auto;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border: 1px solid rgba(255, 196, 87, 0.42);
+  border-radius: 6px;
+  color: #ffe0a3;
+  background: rgba(255, 196, 87, 0.08);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.sc-badge.is-compact {
+  height: 15px;
+  margin-right: 5px;
+  padding: 0 4px;
+  font-size: 10px;
+  vertical-align: 1px;
 }
 
 .content-line {

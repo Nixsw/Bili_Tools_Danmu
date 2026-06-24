@@ -405,6 +405,8 @@ mod tests {
             user_level: 12,
             fan_level: 8,
             guard_type: 0,
+            message_type: crate::models::MessageType::Danmu,
+            super_chat: None,
             timestamp_ms: Some(timestamp_ms),
             timestamp: None,
         }

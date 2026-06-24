@@ -5,16 +5,32 @@ import { createMessageStore } from "../core/messageStore";
 import type { AppSnapshot, IncomingDanmuRaw } from "../core/types";
 
 export interface DisplayConfig {
-  websocketUrl: string;
+  connectApiUrl: string;
   opacity: number;
   fontSize: number;
   panelCollapsed: boolean;
+}
+
+export interface ProbeReport {
+  connect: {
+    uid: number;
+    roomId: number;
+    wsurl: string;
+  };
+  startedMs: number;
+  endedMs: number;
+  danmuSamples: unknown[];
+  superChatSamples: unknown[];
+  otherNotifications: number;
+  superChatStatus: string;
+  reportPath?: string;
 }
 
 export interface DanmuClient {
   init(onSnapshot: (snapshot: AppSnapshot) => void): Promise<() => void>;
   getConfig(): Promise<DisplayConfig>;
   updateConfig(config: Partial<DisplayConfig>): Promise<DisplayConfig>;
+  probeBilibiliConnection(): Promise<ProbeReport>;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   reconnect(): Promise<void>;
@@ -28,14 +44,21 @@ export interface DanmuClient {
     mainViewportSize?: number;
     personViewportSize?: number;
   }): Promise<void>;
+  setMainWindowGeometry(geometry: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }): Promise<void>;
 }
 
 const defaultConfig: DisplayConfig = {
-  websocketUrl: "ws://127.0.0.1:17878",
+  connectApiUrl: "http://127.0.0.1:2333/api/v1/external/danmu-reader/connect",
   opacity: 0.82,
   fontSize: 14,
   panelCollapsed: false
 };
+const BROWSER_MOCK_WS_URL = "ws://127.0.0.1:17878";
 
 export function createDanmuClient(): DanmuClient {
   if (isTauriRuntime()) {
@@ -72,6 +95,8 @@ function createTauriClient(): DanmuClient {
     },
     getConfig: () => invoke<DisplayConfig>("get_config"),
     updateConfig: (config) => invoke<DisplayConfig>("update_config", { patch: config }),
+    probeBilibiliConnection: () =>
+      invoke<ProbeReport>("probe_bilibili_connection"),
     connect: () => invoke<void>("connect_ws"),
     disconnect: () => invoke<void>("disconnect_ws"),
     reconnect: () => invoke<void>("reconnect_ws"),
@@ -85,7 +110,9 @@ function createTauriClient(): DanmuClient {
       invoke<void>("scroll_main_viewport", { delta }),
     scrollPersonViewport: (delta) =>
       invoke<void>("scroll_person_viewport", { delta }),
-    setViewportSizes: (sizes) => invoke<void>("set_viewport_sizes", sizes)
+    setViewportSizes: (sizes) => invoke<void>("set_viewport_sizes", sizes),
+    setMainWindowGeometry: (geometry) =>
+      invoke<void>("set_main_window_geometry", geometry)
   };
 }
 
@@ -114,12 +141,27 @@ function createBrowserFallbackClient(): DanmuClient {
       config = { ...config, ...patch };
       return config;
     },
+    async probeBilibiliConnection() {
+      return {
+        connect: {
+          uid: 0,
+          roomId: 0,
+          wsurl: BROWSER_MOCK_WS_URL
+        },
+        startedMs: Date.now(),
+        endedMs: Date.now(),
+        danmuSamples: [],
+        superChatSamples: [],
+        otherNotifications: 0,
+        superChatStatus: "浏览器预览不执行真实探测"
+      };
+    },
     async connect() {
       socket?.close();
       store.setConnection("连接中", false);
       emit();
 
-      socket = new WebSocket(config.websocketUrl);
+      socket = new WebSocket(BROWSER_MOCK_WS_URL);
       socket.onopen = () => {
         store.setConnection("已连接", true);
         emit();
@@ -179,6 +221,9 @@ function createBrowserFallbackClient(): DanmuClient {
     async setViewportSizes(sizes) {
       store.setViewportSizes(sizes);
       emit();
+    },
+    async setMainWindowGeometry() {
+      return;
     }
   };
 
@@ -200,6 +245,16 @@ function createBrowserFallbackClient(): DanmuClient {
         userLevel: (i * 7) % 101,
         fanLevel: (i * 5) % 121,
         guardType: (i % 4) as 0 | 1 | 2 | 3,
+        ...(i === 6
+          ? {
+              messageType: "superChat" as const,
+              superChat: {
+                id: "preview-sc-1",
+                price: 30,
+                durationSec: 60
+              }
+            }
+          : {}),
         timestampMs: Date.now() - (18 - i) * 15_000
       });
     }

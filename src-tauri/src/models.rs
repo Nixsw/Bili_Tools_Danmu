@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncomingDanmuRaw {
     pub content: String,
@@ -11,8 +11,35 @@ pub struct IncomingDanmuRaw {
     pub user_level: u8,
     pub fan_level: u8,
     pub guard_type: u8,
+    #[serde(default)]
+    pub message_type: MessageType,
+    #[serde(default)]
+    pub super_chat: Option<SuperChatInfo>,
     pub timestamp_ms: Option<i64>,
     pub timestamp: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageType {
+    Danmu,
+    SuperChat,
+}
+
+impl Default for MessageType {
+    fn default() -> Self {
+        Self::Danmu
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SuperChatInfo {
+    pub id: Option<String>,
+    pub price: Option<u64>,
+    pub start_time_ms: Option<i64>,
+    pub end_time_ms: Option<i64>,
+    pub duration_sec: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +52,8 @@ pub struct DanmuMessage {
     pub user_level: u8,
     pub fan_level: u8,
     pub guard_type: u8,
+    pub message_type: MessageType,
+    pub super_chat: Option<SuperChatInfo>,
     pub timestamp_ms: i64,
     pub read: bool,
 }
@@ -51,8 +80,15 @@ pub struct AppSnapshot {
 
 pub fn normalize_incoming(raw: IncomingDanmuRaw, message_id: u64) -> Result<DanmuMessage, String> {
     let content_len = raw.content.chars().count();
-    if !(1..=40).contains(&content_len) {
-        return Err("content length must be between 1 and 40 characters".to_string());
+    let max_content_len = if raw.message_type == MessageType::SuperChat {
+        120
+    } else {
+        40
+    };
+    if !(1..=max_content_len).contains(&content_len) {
+        return Err(format!(
+            "content length must be between 1 and {max_content_len} characters"
+        ));
     }
     if raw.user_level > 100 {
         return Err("userLevel must be between 0 and 100".to_string());
@@ -83,6 +119,8 @@ pub fn normalize_incoming(raw: IncomingDanmuRaw, message_id: u64) -> Result<Danm
         user_level: raw.user_level,
         fan_level: raw.fan_level,
         guard_type: raw.guard_type,
+        message_type: raw.message_type,
+        super_chat: raw.super_chat,
         timestamp_ms,
         read: false,
     })
@@ -108,6 +146,8 @@ mod tests {
             user_level: 12,
             fan_level: 8,
             guard_type: 0,
+            message_type: MessageType::Danmu,
+            super_chat: None,
             timestamp_ms: Some(1_700_000_000_123),
             timestamp: None,
         }
@@ -132,5 +172,27 @@ mod tests {
 
         assert!(error.contains("fanLevel"));
         assert!(error.contains("120"));
+    }
+
+    #[test]
+    fn normalizes_super_chat_metadata_as_independent_message_type() {
+        let mut raw = raw();
+        raw.message_type = MessageType::SuperChat;
+        raw.content = "这是一条醒目留言".to_string();
+        raw.super_chat = Some(SuperChatInfo {
+            id: Some("9001".to_string()),
+            price: Some(30),
+            start_time_ms: Some(1_700_000_000_000),
+            end_time_ms: Some(1_700_000_060_000),
+            duration_sec: Some(60),
+        });
+
+        let message = normalize_incoming(raw, 10).expect("super chat should normalize");
+
+        assert_eq!(message.message_type, MessageType::SuperChat);
+        assert_eq!(
+            message.super_chat.expect("super chat metadata").price,
+            Some(30)
+        );
     }
 }
